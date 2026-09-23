@@ -98,32 +98,58 @@ public class HomeFragment extends Fragment {
                         + " for f in \"$L\"/*kgsl* \"$L\"/dri/*kgsl* \"$L\"/mesa/*kgsl* \"$L\"/*/dri/*kgsl*; do"
                         + " if [ -e \"$f\" ]; then K=Y; break; fi; done;"
                         + " if [ \"$K\" = Y ]; then echo KGSL_YES; else echo KGSL_NO; fi;"
-                        + " else echo NONE; fi",
+                        + " else echo NONE; fi;"
+                        // v3.20 — tamanho do lib do Turnip: o do mesa-for-android-container
+                        // (backend KGSL) tem ~17,3-17,5 MB; o do pacote da distro
+                        // (mesa-vulkan-drivers) tem ~10,3-10,6 MB. Se o apt sobrescreveu,
+                        // detectamos aqui e o botão de reinstalar aparece.
+                        + " echo '@@TURNIP@@';"
+                        + " R=$(" + TuxPaths.LIST_ROOTFS_CMD + " | head -n1);"
+                        + " if [ -n \"$R\" ]; then"
+                        + "   B=\"" + base + "/$R\";"
+                        + "   T=$(cd \"$B\" 2>/dev/null && (dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo $(uname -m)-linux-gnu));"
+                        + "   for t in \"$T\" \"$(uname -m)-linux-gnu\" \"\"; do"
+                        + "     for l in \"$B/usr/lib/$t/libvulkan_freedreno.so\" \"$B/usr/lib/libvulkan_freedreno.so\"; do"
+                        + "       if [ -f \"$l\" ]; then stat -c %s \"$l\" 2>/dev/null && break 2; fi"
+                        + "     done"
+                        + "   done"
+                        + " else echo 0; fi",
                 out -> {
-                    String first = null, gpu = null, mesa = null;
-                    int mode = 0; // 0=nomes, 1=gpu, 2=mesa
+                    String first = null, gpu = null, mesa = null, turnip = null;
+                    int mode = 0; // 0=nomes, 1=gpu, 2=mesa, 3=turnip
                     for (String line : out.split("\n")) {
                         String l = line.trim();
                         if (l.isEmpty() || l.startsWith("$ ") || l.startsWith("[exit=") || l.startsWith("ERR:")) continue;
                         if (l.equals("@@GPU@@")) { mode = 1; continue; }
                         if (l.equals("@@MESA@@")) { mode = 2; continue; }
+                        if (l.equals("@@TURNIP@@")) { mode = 3; continue; }
                         if (mode == 0 && first == null) first = l;
                         else if (mode == 1 && gpu == null) gpu = l;
                         else if (mode == 2 && mesa == null) mesa = l;
+                        else if (mode == 3 && turnip == null) turnip = l;
                     }
-                    final String f = first, g = gpu, m = mesa;
+                    final String f = first, g = gpu, m = mesa, tp = turnip;
                     // v3.10 — requireActivity() sem checar isAdded() estourava
                     // IllegalStateException quando o root demorava e o callback
                     // chegava depois de o fragment ter sido desfeito — era o
                     // "app quebrou" ao voltar pra lista de containers.
                     if (!isAdded()) return;
                     requireActivity().runOnUiThread(() -> {
-                        if (isAdded()) renderHero(f, g, m);
+                        if (isAdded()) renderHero(f, g, m, tp);
                     });
                 });
     }
 
-    private void renderHero(String env, String gpu, String mesa) {
+    /**
+     * v3.20 — {@code turnip} é o tamanho (em bytes) do libvulkan_freedreno.so no
+     * container. O build do mesa-for-android-container (backend KGSL, o que
+     * funciona) tem ~17,3-17,5 MB; o do pacote da distro (mesa-vulkan-drivers)
+     * tem ~10,3-10,6 MB. Serve para duas coisas: avisar que o apt sobrescreveu o
+     * driver, e manter o botão de instalação/reinstalação sempre acessível —
+     * antes o botão sumia assim que havia QUALQUER arquivo `*kgsl*` no
+     * usr/lib, ou seja, justamente quando o Turnip precisava ser refeito.
+     */
+    private void renderHero(String env, String gpu, String mesa, String turnip) {
         if (env == null) {
             heroEnv = null;
             tvHeroName.setText(R.string.home_ct_none);
@@ -153,13 +179,30 @@ public class HomeFragment extends Fragment {
         }
 
         boolean hwGpu = !"NONE".equals(gpu);
-        tvHeroGpu.setText(gpuLabel + "  ·  " + getString(mesaOk ? R.string.home_mesa_ok : R.string.home_mesa_no));
+        // v3.20 — o Turnip do container-for-android (backend KGSL) tem ~17,4 MB;
+        // o do pacote da distro ~10,5 MB. Se estiver no tamanho da distro, o apt
+        // sobrescreveu e o Vulkan cai no lavapipe.
+        long turnipBytes = 0;
+        try { turnipBytes = turnip == null ? 0 : Long.parseLong(turnip.trim()); } catch (Exception ignored) { }
+        boolean turnipOk = turnipBytes >= 15_000_000L;
+        boolean turnipStolen = mesaOk && !turnipOk;
+
+        String state = mesaOk
+                ? (turnipOk ? getString(R.string.home_mesa_ok)
+                             : getString(R.string.home_turnip_stolen))
+                : getString(R.string.home_mesa_no);
+        tvHeroGpu.setText(gpuLabel + "  ·  " + state);
         tvHeroGpu.setTextColor(getResources().getColor(
-                mesaOk ? R.color.tux_green : (hwGpu ? R.color.tux_violet_light : R.color.tux_text_secondary)));
+                turnipOk ? R.color.tux_green : (hwGpu ? R.color.tux_violet_light : R.color.tux_text_secondary)));
         tvHeroGpu.setVisibility(View.VISIBLE);
 
-        // Só oferece instalação quando há GPU nativa utilizável e a Mesa ainda não está lá.
-        btnInstallGpu.setVisibility((!mesaOk && hwGpu) ? View.VISIBLE : View.GONE);
+        // v3.20 — botão SEMPRE disponível quando há GPU nativa: "Instalar Mesa GPU"
+        // ainda não instalado, "Reinstalar Mesa GPU" quando já está (inclusive
+        // quando o Turnip foi sobrescrito pelo apt). Antes ele sumia assim que
+        // existia qualquer *kgsl*.so no usr/lib, prendendo o usuário sem como
+        // refazer a instalação.
+        btnInstallGpu.setText(mesaOk ? R.string.btn_reinstall_mesa : R.string.btn_install_mesa);
+        btnInstallGpu.setVisibility(hwGpu ? View.VISIBLE : View.GONE);
     }
 
     /** Transforma a saída bruta do host numa etiqueta legível ("Adreno650v3" → "Adreno 650 v3 (kgsl)"). */

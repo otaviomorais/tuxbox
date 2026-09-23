@@ -778,6 +778,23 @@ carrega o ICD, o driver init falha/só oferece lavapipe → **llvmpipe**.
 **Correção imediata**: reinstalar pelo app ("Instalar Mesa GPU" na aba Home) —
 a extração sobrescreve a lib da distro e o `ldconfig` roda em seguida.
 
+### 10.q — v3.20 (APK `2f0268a8`): botão de reinstalar o Mesa sempre visível
+
+Campo: "não tem botão de reinstalar o driver Mesa Turnip na tela inicial depois
+que é instalado a primeira vez". **Bug real:** o botão aparecia só com
+`!mesaOk && hwGpu`, e `mesaOk` é verdadeiro quando existe **qualquer**
+`*kgsl*.so` no `usr/lib` — e o Debian tem `dri/kgsl_dri.so` do Mesa da distro.
+Ou seja: o botão ficava oculto **justamente** quando o Turnip tinha sido
+sobrescrito pelo apt e era preciso reinstalar. Beco sem saída.
+
+**v3.20**:
+- o botão fica **sempre visível** quando há GPU nativa; o rótulo alterna entre
+  "Instalar Mesa GPU" e "Reinstalar Mesa GPU";
+- o card passa a medir o **tamanho do `libvulkan_freedreno.so`**
+  (custom/backend KGSL ≈ 17,3–17,5 MB vs. distro ≈ 10,3–10,6 MB) e mostra
+  **"Turnip sobrescrito pelo apt — reinstale"** quando detecta o tamanho da
+  distro — o app passa a *saber* que o driver Vulkan não é o correto.
+
 **v3.19 — proteção durável no APK**: antes de extrair, o app roda
 `dpkg-divert --add --rename --divert` em
 `/usr/lib/<triplet>/libvulkan_freedreno.so` e

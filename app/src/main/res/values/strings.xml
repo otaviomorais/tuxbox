@@ -28,6 +28,9 @@
     <string name="home_mesa_ok">Mesa kgsl instalada</string>
     <string name="home_mesa_no">Mesa kgsl: não instalada</string>
     <string name="btn_install_mesa">Instalar Mesa GPU</string>
+    <!-- v3.20: o apt sobrescreveu o Turnip/backend KGSL pelo pacote da distro -->
+    <string name="home_turnip_stolen">Turnip sobrescrito pelo apt — reinstale</string>
+    <string name="btn_reinstall_mesa">Reinstalar Mesa GPU</string>
     <string name="mesa_title">Instalando Mesa GPU</string>
     <string name="mesa_detect">Detectando distro do container…</string>
     <string name="mesa_dl">Baixando driver Mesa…</string>
