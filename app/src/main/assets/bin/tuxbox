@@ -631,7 +631,10 @@ _wd_alive() { # singleton validado: pid vivo E e' mesmo o watchdog
     [ -r "$TX11_LOCK/pid" ] || return 1
     _p="$(cat "$TX11_LOCK/pid" 2>/dev/null)" || return 1
     kill -0 "$_p" 2>/dev/null || return 1
-    head -c 256 "/proc/$_p/cmdline" 2>/dev/null | grep -q 'x11-watchdog' || return 1
+    # v3.15 — 2>/dev/null ANTES da leitura: se o processo morrer entre o glob e
+    # o read, o mksh imprime "can't open /proc/N/cmdline" no terminal (o
+    # redirect de stderr depois do de entrada nao cobre a falha da abertura).
+    head -c 256 2>/dev/null "/proc/$_p/cmdline" | grep -q 'x11-watchdog' || return 1
 }
 if _wd_alive; then
     exit 0
@@ -750,7 +753,7 @@ EOF
                     # de teste, um grep, um bash -c) contaria como WM ativo.
                     _wm_pid=""
                     for _f in /proc/[0-9]*/cmdline; do
-                        _a0="$(tr '\0' '\n' < "$_f" 2>/dev/null | sed -n 1p)" || continue
+                        _a0="$(tr '\0' '\n' 2>/dev/null < "$_f" | sed -n 1p)" || continue
                         [ -n "$_a0" ] || continue
                         case "${_a0##*/}" in
                             "$_wm_bin")
@@ -794,7 +797,7 @@ EOF
                             sleep 0.6
                             # setsid pode ter forkado: procura o pid real pelo argv[0]
                             for _f in /proc/[0-9]*/cmdline; do
-                                _a0="$(tr '\0' '\n' < "$_f" 2>/dev/null | sed -n 1p)" || continue
+                                _a0="$(tr '\0' '\n' 2>/dev/null < "$_f" | sed -n 1p)" || continue
                                 [ -n "$_a0" ] || continue
                                 case "${_a0##*/}" in
                                     "$_wm_bin")
