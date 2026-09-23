@@ -247,11 +247,31 @@ public class HomeFragment extends Fragment {
 
                 // 4) Extração com checagem real do retorno do tar (o shell root
                 // consegue ler o cache do app — mesmo padrão do fluxo de download).
+                //
+                // v3.19 — PROTEÇÃO CONTRA O APT: em imagem Debian o
+                // libvulkan_freedreno.so do Turnip custom (17,4 MB, backend KGSL)
+                // é sobrescrito pelo pacote mesa-vulkan-drivers da distro (10,6 MB)
+                // em qualquer apt install/upgrade — e aí o loader Vulkan pula o
+                // ICD e cai no lavapipe (llvmpipe). dpkg-divert tira o arquivo do
+                // domínio do apt (renomeia para .dpkg-divert) ANTES da extração,
+                // que é o mecanismo oficial para ficheiros geridos à mão.
                 setMesaStatus(getString(R.string.mesa_extract));
+                final String RFS = base + "/" + env;
                 String z = info[1].endsWith(".gz") ? "z" : "";
-                String out = RootShell.run("tar -x" + z + "f '" + tmpPath + "' -C '" + base + "/" + env + "' 2>&1;"
+                String out = RootShell.run(
+                        "T=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo $(uname -m)-linux-gnu);"
+                        + " D=" + RFS + ";"
+                        + " for p in \"/usr/lib/$T/libvulkan_freedreno.so\" \"/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json\"; do"
+                        + "   if [ -e \"$D$p\" ] || [ -L \"$D$p\" ]; then"
+                        + "     chroot " + RFS + " dpkg-divert --add --rename --divert \"$p\" \"$p.dpkg-divert\" >/dev/null 2>&1 || true;"
+                        + "   fi;"
+                        + " done;"
+                        + " tar -x" + z + "f '" + tmpPath + "' -C '" + RFS + "' 2>&1;"
                         + " rc_tar=$?;"
-                        + " if [ \"$rc_tar\" = \"0\" ] && [ -x '" + base + "/" + env + "/sbin/ldconfig' ]; then chroot '" + base + "/" + env + "' /sbin/ldconfig 2>/dev/null || true; fi;"
+                        + " if [ \"$rc_tar\" = \"0\" ] && [ -x '" + RFS + "/sbin/ldconfig' ]; then chroot '" + RFS + "' /sbin/ldconfig 2>/dev/null || true; fi;"
+                        // Diagnóstico: tamanho do lib do Turnip (distro ~10,5 MB,
+                        // custom/backend KGSL ~17,4 MB) — entra no log da aba Home.
+                        + " echo \"TURNIP_LIB=$(stat -c %s '" + RFS + "/usr/lib/$T/libvulkan_freedreno.so' 2>/dev/null || echo 0)\";"
                         + " rm -f '" + tmpPath + "'; echo \"TAR_RC=$rc_tar\"");
                 tmp = null;
                 int rc = parseTarRc(out);

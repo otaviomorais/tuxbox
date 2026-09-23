@@ -753,3 +753,36 @@ vulkaninfo --summary               # deve listar Turnip/MESA_TURNIP + Adreno
 touch /root/.gui_gl_kgsl           # GL na GPU (reabra a aba --gui: lido no boot)
 glxinfo -B | grep -i renderer      # deve mostrar kgsl/zink, não llvmpipe
 ```
+
+### 10.p — v3.19 (APK `e8e3b780`): o APT rouba o Turnip (Debian) — dpkg-divert
+
+Campo: no `debian-trixie`, `vulkaninfo --summary` mostrava **lavapipe/llvmpipe**
+em vez de Turnip. Comparação campo a campo dos dois containers:
+
+| arquivo | Ubuntu (funciona) | Debian (não) |
+|---|---|---|
+| `libvulkan_freedreno.so` (Turnip) | **17.420.912** | **10.632.136** ← da distro |
+| `libvulkan_lvp.so` (lavapipe) | 11.687.144 | 10.375.464 |
+| `libgallium-26.3.0-devel.so` (custom) | 28.308.768 ✅ | 28.370.320 ✅ |
+| `dri/kgsl_dri.so` → `libdril_dri.so` | ✅ | ✅ |
+| ICD `freedreno_icd.aarch64.json` | ✅ idêntico | ✅ idêntico |
+| `00-turnip-defaults.conf` | ✅ | ✅ |
+
+O tarball `…_debian_trixie` traz `libvulkan_freedreno.so` com **17.483.184**;
+o container tinha **10.632.136** = `mesa-vulkan-drivers` da distro (Deb13
+25.0.7). O `libgallium-26.3.0-devel.so` batia **exatamente** com o tarball →
+a extração do app foi completa; **um `apt install/upgrade` posterior sobrescreveu
+o Turnip custom** (o apt é dono daquele caminho). Resultado: o loader Vulkan
+carrega o ICD, o driver init falha/só oferece lavapipe → **llvmpipe**.
+
+**Correção imediata**: reinstalar pelo app ("Instalar Mesa GPU" na aba Home) —
+a extração sobrescreve a lib da distro e o `ldconfig` roda em seguida.
+
+**v3.19 — proteção durável no APK**: antes de extrair, o app roda
+`dpkg-divert --add --rename --divert` em
+`/usr/lib/<triplet>/libvulkan_freedreno.so` e
+`/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json` (multiarch detectado por
+`dpkg-architecture -qDEB_HOST_MULTIARCH`), tirando esses caminhos do domínio do
+apt. Também passa a logar `TURNIP_LIB=<bytes>` na aba Home (distro ≈ 10,5 MB,
+custom/KGSL ≈ 17,4 MB) para dar pra ver de imediato se o driver certo está no
+lugar.
