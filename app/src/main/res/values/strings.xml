@@ -102,6 +102,10 @@
     <string name="term_notif_channel_desc">Mantém a sessão do container rodando em segundo plano</string>
     <string name="term_notif_title">Terminal TuxBox ativo</string>
     <string name="term_notif_text">Sessão em %1$s rodando em segundo plano</string>
+    <!-- v3.13: aviso quando a notificação persistente está bloqueada -->
+    <string name="term_warn_notif">Notificações desligadas</string>
+    <string name="term_warn_notif_msg">A notificação persistente é o que mantém a sessão do container viva quando você sai do app. Sem ela, o Android pode encerrar a sessão em segundo plano. Ative as notificações do TuxBox para a sessão sobreviver.</string>
+    <string name="term_warn_notif_action">Ativar</string>
 
     <!-- about -->
     <string name="about_title">Sobre o TuxBox</string>

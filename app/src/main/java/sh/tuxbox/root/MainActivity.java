@@ -35,12 +35,13 @@ public class MainActivity extends AppCompatActivity {
             bottomNav.setSelectedItemId(R.id.nav_home);
         }
 
-        // Android 13+: the foreground-service notification needs POST_NOTIFICATIONS
-        // to be visible in the shade. Ask once; the service still runs if denied.
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 100);
-        }
+        // v3.13 — a permissão POST_NOTIFICATIONS (Android 13+) NÃO é pedida
+        // aqui: no lançamento não há contexto e, negada uma vez, ela fica negada
+        // para sempre — a notificação persistente da sessão simplesmente nunca
+        // aparecia e o app morria em segundo plano sem aviso. O pedido agora
+        // acontece no Terminal, no momento em que a sessão começa
+        // (TerminalFragment.ensureSessionNotification), que também avisa e leva
+        // às configurações se já estiver bloqueada.
     }
 
     private boolean onNavItemSelected(@NonNull MenuItem item) {

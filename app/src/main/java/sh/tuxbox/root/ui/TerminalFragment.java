@@ -1,6 +1,10 @@
 package sh.tuxbox.root.ui;
 
+import android.Manifest;
+import android.content.Context;
+import android.content.pm.PackageManager;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -16,6 +20,9 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.fragment.app.Fragment;
@@ -383,6 +390,11 @@ public class TerminalFragment extends Fragment {
                         sActiveTab = sTabs.size() - 1;
                         attachActiveTab();
                         TerminalService.start(requireContext(), env);
+                        // v3.13 — a notificação persistente é o que segura a
+                        // sessão em segundo plano. Se a permissão/canal estiver
+                        // desligado, ela some e o app morre sem aviso: pide em
+                        // contexto (aqui) e, se já negada, leva às configurações.
+                        ensureSessionNotification(env);
                         terminalView.requestFocus();
                         TerminalClients.showSoftInput(requireContext(), terminalView);
                     } catch (Exception e2) {
@@ -399,6 +411,39 @@ public class TerminalFragment extends Fragment {
                 });
             }
         }).start();
+    }
+
+    // ---------------------------------------------------------------------
+    // v3.13 — Notificação persistente (o que segura a sessão em 2º plano)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Garante que a notificação do foreground service possa aparecer:
+     * 1. Android 13+: pede POST_NOTIFICATIONS **aqui** (no momento em que a
+     *    sessão começa), e não no lançamento do app — pedir no start é pedir
+     *    sem contexto, e uma negagem lá fica negada para sempre.
+     * 2. Se ainda assim estiver bloqueada (negada 2x ou canal silenciado),
+     *    mostra um toast com botão que abre as configurações do app: sem isso
+     *    o usuário só vê a sessão morrer em segundo plano, sem explicação.
+     */
+    private void ensureSessionNotification(String env) {
+        Context ctx = requireContext();
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(requireActivity(),
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS}, 100);
+        }
+        if (TerminalService.notificationsVisible(ctx)) return;
+        // v3.13 — Toast.setAction é @hide no framework (não existe no SDK
+        // público), então o atalho para as configurações vai num diálogo.
+        new AlertDialog.Builder(ctx)
+                .setTitle(R.string.term_warn_notif)
+                .setMessage(R.string.term_warn_notif_msg)
+                .setPositiveButton(R.string.term_warn_notif_action,
+                        (d, w) -> TerminalService.openNotificationSettings(requireActivity()))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     // ---------------------------------------------------------------------
