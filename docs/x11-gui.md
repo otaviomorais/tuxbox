@@ -692,3 +692,31 @@ Nota de arquitetura (já documentada, reconfirmada aqui): o display `:0` é úni
 no aparelho, então **dois rootfs com `--gui` disputam o mesmo servidor X** — o
 `pkill` do trylaunch é global. Abas do **mesmo** rootfs compartilham; rootfs
 diferentes alternam o dono do display a cada boot.
+
+### 10.n — v3.17 (APK `8d69d802`): display :0 com dono estrangeiro — falha rápida
+
+Campo (v3.16): o Debian deixou de morrer (`exit=1` resolvido), mas avisou
+`X11: servidor termux-x11 nao subiu` depois de ~64s. Os logs provaram a causa:
+
+```
+17:59:06  Debian: "AVISO sem xkeyboard-config neste container"
+17:59:07  pkill → matou o servidor do Ubuntu → lança o do Debian
+18:00:40  watchdog do Ubuntu: "wd start pid=145 tmp=…/ubuntu-noble/…"  ← RECLAIM
+18:00:56  boot do Ubuntu: ok=1
+```
+
+Socket do Ubuntu: presente. Socket do Debian: ausente. **Não é bug: o `:0` é
+único na tela.** O watchdog do outro container sempre recupera o display, e os
+dois se atropelam — o perdedor espera 40s+24s e só então falha com mensagem
+genérica.
+
+**v3.17** troca a espera por **detecção + mensagem útil**:
+- antes de lançar, varre `/proc/net/unix` por um listener X de **outro**
+  container (exclui o próprio `$_SRV`); se achar, **não mata ninguém**, não
+  espera 64s, e avisa no terminal qual é o dono + como resolver;
+- escape hatch: `/root/.x11_takeover` assume o display (comportamento antigo,
+  útil para trocar de container de propósito);
+- o cache global de xkb (`/data/local/tuxbox-x11/xkb-path`) já é gravado pelo
+  primeiro container que tem xkb, então o Debian passa a funcionar sozinho
+  assim que o Ubuntu rodar uma vez com a v3.16+ — mas, pelo display único, só
+  um container por vez.

@@ -587,13 +587,33 @@ if [ "${PHASE2:-}" = "1" ]; then
                 done
                 return 1
             }
-            _x11_trylaunch
-            if _x11_wait 100; then
-                bootinfo "X11: servidor visto no wait (compartilhado ok)"
+            # v3.17 — display :0 e' UNICO na tela do aparelho. Se OUTRO container
+            # ja tem o servidor X vivo, este nao pode simplesmente mata-lo: o
+            # watchdog alheio reclaima o :0 em ~1s e os dois se atropelam
+            # (medido: Debian esperou 40s+24s e perdeu; o Ubuntu voltou com
+            # "wd start pid=145"). Em vez de esperar e falhar com mensagem
+            # generica, detectamos o dono estrangeiro em SEGUNDOS e avisamos.
+            # Escape hatch: /root/.x11_takeover assume o display.
+            _x11_takeover=0
+            [ -f "$ROOTFS/root/.x11_takeover" ] && _x11_takeover=1
+            _x11_owner=""
+            if [ "$_x11_takeover" != "1" ]; then
+                _x11_owner="$(awk 'NR>1 && $6=="01" {print $NF}' /proc/net/unix 2>/dev/null \
+                    | grep -E '/\.X11-unix/X[0-9]+$|/xvfb\.sock$' \
+                    | grep -v "^$_SRV/" | head -n 1)"
+            fi
+            if [ -n "$_x11_owner" ]; then
+                bootinfo "X11: display :0 ja pertence a outro container ($_x11_owner) — este container abriu SEM X11"
+                warn "X11: o display :0 ja esta em uso por outro container; para usa-lo aqui, feche as abas --gui do outro (ou crie /root/.x11_takeover para assumir)"
             else
-                bootinfo "X11: wait1 (40s) esgotou sem listener compartilhado; 2a tentativa"
                 _x11_trylaunch
-                _x11_wait 60 || true
+                if _x11_wait 100; then
+                    bootinfo "X11: servidor visto no wait (compartilhado ok)"
+                else
+                    bootinfo "X11: wait1 (40s) esgotou sem listener compartilhado; 2a tentativa"
+                    _x11_trylaunch
+                    _x11_wait 60 || true
+                fi
             fi
             # Publica o socket no /tmp do container: SYMLINK (bind mounts falham no
             # SELinux aqui — provado no v3.8). /tmp e' tmpfs POR ABA; o alvo
