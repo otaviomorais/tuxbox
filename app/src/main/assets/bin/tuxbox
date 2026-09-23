@@ -511,9 +511,13 @@ if [ "${PHASE2:-}" = "1" ]; then
             _XS_LOCK="$_STD/lock"
             _XS_XKB="$_STD/xkb"
             _XS_SLOG="$_STD/termux-x11.log"
+            # v3.16 — sem "$ROOTFS/var/lock" aqui: em imagem Debian/usrmerge ele
+            # e' symlink para /run/lock e o `mkdir -p` nele falha (EEXIST/ENOENT)
+            # — matava o boot. O lock do watchdog agora vive em $_STD. O `|| true`
+            # garante que nenhuma falha de mkdir nao derrube o container.
             mkdir -p "$_SRV/.X11-unix" "$_XS_RUN" "$_STD" \
                 "$ROOTFS/tmp/.X11-unix" \
-                "$ROOTFS/run/user/0" "$ROOTFS/var/log" "$ROOTFS/var/lock"
+                "$ROOTFS/run/user/0" "$ROOTFS/var/log" "$ROOTFS/var/lib" 2>/dev/null || true
             chmod 700 "$_XS_RUN" "$ROOTFS/run/user/0" 2>/dev/null || true
             # Listener real em /proc/net/unix (mesmo criterio do watchdog).
             _x11_listen() {
@@ -530,14 +534,36 @@ if [ "${PHASE2:-}" = "1" ]; then
                   if ! _x11_listen "$_SRV/xvfb.sock" && \
                      ! _x11_listen "$_SRV/.X11-unix/X0"; then
                       pkill -f 'com.termux.x11.CmdEntryPoint' 2>/dev/null || true
-                      # mkdir aqui tambem: o CmdEntryPoint apaga o TMPDIR na
-                      # saida; sem isso um relaunch cairia em mkdir ENOENT
-                      # (visto no log do servidor).
+                      # v3.16 — CORRACAO DE CORRIDA: o CmdEntryPoint APAGA o
+                      # TMPDIR quando sai. Sem esperar, o mkdir abaixo roda
+                      # enquanto o servidor morto ainda esta limpando e o novo
+                      # servidor cai em mkdir ENOENT / "Cannot establish any
+                      # listening sockets" — era o que travava imagem NOVA.
+                      sleep 1
                       mkdir -p "$_SRV/.X11-unix" "$_XS_RUN" 2>/dev/null || true
                       rm -f "$_SRV/xvfb.sock" "$_SRV/.X11-unix/X0" \
                           "$_SRV/.X11-unix/.X0-lock" 2>/dev/null || true
-                      [ -f "$_XS_XKB" ] || echo "$ROOTFS/usr/share/X11/xkb" > "$_XS_XKB"
-                      _xkb="$(cat "$_XS_XKB" 2>/dev/null || echo "$ROOTFS/usr/share/X11/xkb")"
+                      # v3.16 — xkb: imagem nova (ex.: Debian minima) pode nao
+                      # ter /usr/share/X11/xkb, e o X morre com "Failed to
+                      # activate virtual core keyboard". Ordem: (1) o xkb deste
+                      # rootfs; (2) o path em cache de um container que tinha
+                      # (gravado em /data/local/tuxbox-x11/xkb-path, fora da base
+                      # de containers); (3) o path do proprio rootfs, com aviso
+                      # de como instalar.
+                      _xkb=""
+                      if [ -d "$ROOTFS/usr/share/X11/xkb" ]; then
+                          _xkb="$ROOTFS/usr/share/X11/xkb"
+                          mkdir -p /data/local/tuxbox-x11 2>/dev/null || true
+                          echo "$_xkb" > /data/local/tuxbox-x11/xkb-path 2>/dev/null || true
+                      elif [ -r /data/local/tuxbox-x11/xkb-path ]; then
+                          _xkb="$(cat /data/local/tuxbox-x11/xkb-path 2>/dev/null)"
+                          [ -d "$_xkb" ] || _xkb=""
+                      fi
+                      if [ -z "$_xkb" ]; then
+                          _xkb="$ROOTFS/usr/share/X11/xkb"
+                          bootinfo "X11: AVISO sem xkeyboard-config neste container — o X pode nao subir (apt install -y xkb-data)"
+                      fi
+                      echo "$_xkb" > "$_XS_XKB" 2>/dev/null || true
                       TMPDIR="$_SRV" XKB_CONFIG_ROOT="$_xkb" \
                       XDG_RUNTIME_DIR="$_XS_RUN" CLASSPATH="$_tx11_apk" \
                       setsid /system/bin/app_process / --nice-name=termux-x11 \
@@ -597,10 +623,15 @@ if [ "${PHASE2:-}" = "1" ]; then
             # por flock + re-check). Singleton por lockdir+pid em var/lock.
             _x11_wd_pid=
             _x11_wd_ver="3.9"
-            _x11_wd_lock="$ROOTFS/var/lock/tuxbox-x11-watchdog"
+            # v3.16 — lockdir do watchdog saiu de $ROOTFS/var/lock: em imagem
+            # nova (Debian/usrmerge) /var/lock e' SYMLINK para /run/lock — path
+            # ABSOLUTO que, pre-pivot, resolve no HOST e da ENOENT. O `mkdir -p`
+            # nao guardado MATAVA o script (exit=1, terminal vazio). Agora usa o
+            # dir de estado que criamos nos, que e' diretorio de verdade.
+            _x11_wd_lock="$_STD/watchdog"
             _x11_wd_old="$(cat "$_x11_wd_lock/pid" 2>/dev/null || true)"
             if [ -n "$_x11_wd_old" ] && kill -0 "$_x11_wd_old" 2>/dev/null && \
-                head -c 256 "/proc/$_x11_wd_old/cmdline" 2>/dev/null | grep -q 'x11-watchdog' && \
+                head -c 256 2>/dev/null "/proc/$_x11_wd_old/cmdline" | grep -q 'x11-watchdog' && \
                 [ "$(cat "$_x11_wd_lock/ver" 2>/dev/null || true)" = "$_x11_wd_ver" ]; then
                 _x11_wd_pid="$_x11_wd_old"
             else
@@ -610,8 +641,21 @@ if [ "${PHASE2:-}" = "1" ]; then
                 if [ -n "$_x11_wd_old" ]; then
                     kill "$_x11_wd_old" 2>/dev/null || true
                 fi
-                rm -rf "$_x11_wd_lock"
-                mkdir -p "$_x11_wd_lock"
+                rm -rf "$_x11_wd_lock" 2>/dev/null || true
+                mkdir -p "$_x11_wd_lock" 2>/dev/null || true
+                if [ ! -d "$_x11_wd_lock" ] || [ ! -w "$_x11_wd_lock" ]; then
+                    bootinfo "X11: AVISO lockdir do watchdog indisponivel ($_x11_wd_lock) — sem auto-recuperacao do X"
+                    _x11_wd_lock=""
+                fi
+                if [ -n "$_x11_wd_lock" ]; then
+                # v3.16 — imagem minima pode nao ter /usr/local/bin
+                mkdir -p "$ROOTFS/usr/local/bin" 2>/dev/null || true
+                if ! : > "$ROOTFS/usr/local/bin/x11-watchdog" 2>/dev/null; then
+                    bootinfo "X11: AVISO nao foi possivel escrever /usr/local/bin/x11-watchdog — sem auto-recuperacao do X"
+                    _x11_wd_lock=""
+                fi
+            fi
+            if [ -n "$_x11_wd_lock" ]; then
                 cat > "$ROOTFS/usr/local/bin/x11-watchdog" <<'EOF'
 #!/system/bin/sh
 # tuxbox x11 watchdog v3.9 — servidor X COMPARTILHADO entre abas/containers.
@@ -717,6 +761,7 @@ EOF
                 else
                     echo "[tuxbox] X11: AVISO: watchdog nao subiu (lock ausente)" >&2
                 fi
+            fi
             fi
             # Diagnostico v3.9: estado real do listener compartilhado pos-waits
             if ! { _x11_listen "$_SRV/xvfb.sock" || _x11_listen "$_SRV/.X11-unix/X0"; }; then

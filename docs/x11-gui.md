@@ -659,3 +659,36 @@ Dois bugs encontrados testando o bloco com mksh + socket X simulado no host:
 2. **caminho relativo no `chroot`** — `usr/bin/env` relativo falhava com ENOENT
    (depois do chroot o CWD não existe mais). Corrigido para caminho **absoluto**
    dentro do chroot.
+
+### 10.m — v3.16 (APK `66c21f64`): container NOVO (Debian) — teste do zero
+
+Teste do usuário: baixou um segundo container (`debian-trixie`), instalou Mesa e
+a aba `--gui` **trava e morre com `exit=1`**, enquanto `ubuntu-noble` funciona.
+O `P2-DIE` apontou `LINHA=614` e o `X11: wait1 (40s) esgotou sem listener`.
+**Dois defeitos que só aparecem em imagem nova:**
+
+1. **`/var/lock` é symlink** — em Debian/usrmerge, `/var/lock → /run/lock`.
+   Path **absoluto**, que pré-pivô resolve no **HOST** → ENOENT/EEXIST. Havia
+   **dois** `mkdir -p` não guardados nele: o da lista do bloco X11 (matava o
+   boot antes do X) e o do lockdir do watchdog (era a linha 614 do `exit=1`).
+   Diagnóstico de campo: `ls var/lock` pelo `sb` dá ENOENT, mas o diretório-pai
+   lista como `d` (symlink pendente) — enquanto no Ubuntu é diretório real.
+   → lockdir do watchdog movido para `$_STD/watchdog` (dir de estado que criamos
+   nós), `mkdir` da lista sem `/var/lock` e com `|| true`, e o bloco do watchdog
+   agora **degrada** (aviso + segue sem auto-recuperação) em vez de matar o boot.
+2. **Imagem mínima sem `xkeyboard-config`** — sem `/usr/share/X11/xkb` o X morre
+   com `Failed to activate virtual core keyboard` (log do servidor). Agora:
+   usa o xkb do próprio rootfs; se faltar, **reaproveita o path de um container
+   que tem** (cache global em `/data/local/tuxbox-x11/xkb-path`, fora da base de
+   containers, com validação de existência); senão avisa com o comando de
+   instalação (`apt install -y xkb-data`) e segue.
+3. **Corrida do relaunch** — o `CmdEntryPoint` **apaga o TMPDIR ao sair**; o
+   `mkdir` do trylaunch rodava antes do servidor morto terminar de limpar, e o
+   novo caía em `mkdir ENOENT` / `Cannot establish any listening sockets`.
+   → `sleep 1` entre o `pkill` e o `mkdir` (o v3.2 já fazia isso; o refactor
+   v3.6+ tinha perdido).
+
+Nota de arquitetura (já documentada, reconfirmada aqui): o display `:0` é único
+no aparelho, então **dois rootfs com `--gui` disputam o mesmo servidor X** — o
+`pkill` do trylaunch é global. Abas do **mesmo** rootfs compartilham; rootfs
+diferentes alternam o dono do display a cada boot.
