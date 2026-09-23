@@ -884,7 +884,7 @@ EOF
                     >/dev/null 2>&1 || true
                 bootinfo "X11: termux-x11 em :0 -> DISPLAY=:0 (symlink /tmp/.X11-unix/X0)"
                 bootinfo "X11: GL nesta aba via llvmpipe; Vulkan (Turnip/kgsl) na GPU"
-                bootinfo "X11: GLX hw na GPU: touch /root/.gui_gl_zink (zink->Turnip); llvmpipe e' o default"
+                bootinfo "X11: GLX/GL na GPU: touch /root/.gui_gl_kgsl (kgsl, recomendado) ou /root/.gui_gl_zink (zink)"
                 X11_ENV="DISPLAY=:0 XKB_CONFIG_ROOT=/usr/share/X11/xkb XDG_RUNTIME_DIR=/run/user/0"
             else
                 echo "[tuxbox] X11: servidor termux-x11 nao subiu (log: $_XS_SLOG)" >&2
@@ -910,19 +910,28 @@ EOF
     #    llvmpipe. Nesse caso forçamos o driver pelo nome (freedreno/panfrost).
     GPU_ENV=""
     if [ "${GUI:-0}" = "1" ]; then
-        # GUI remota (termux-x11): forcar o backend kgsl aqui quebra GLX/EGL-X11
-        # (ele precisa de dma-buf/DRM local p/ present -> "kgsl_bo_new_dmabuf
-        # Failed to allocate dma-buf" + segfault, ex. glxgears). Por padrao o
-        # GL/GLX/EGL roda em llvmpipe (estavel no X remoto) e o Vulkan segue na
-        # GPU (Turnip via kgsl, ICD lido direto). Com /dev/ion (criado no boot)
-        # e o DRI3 do termux-x11 da pra ter GLX/EGL acelerado via zink->Turnip:
-        #     touch /root/.gui_gl_zink
-        # ativa (remova o arquivo pra voltar a llvmpipe).
-        if [ -e /root/.gui_gl_zink ]; then
-            GPU_ENV="TU_DEBUG=noconform MESA_LOADER_DRIVER_OVERRIDE=zink"
-        else
-            GPU_ENV="TU_DEBUG=noconform"
+        # GUI remota (termux-x11). O padrao e' GL/GLX em llvmpipe (software,
+        # estavel) e Vulkan na GPU via Turnip/kgsl — de proposito.
+        # Para ACELERAR O GL na GPU existem dois modos (Mesa 26.x do
+        # mesa-for-android-container, backend KGSL do Freedreno):
+        #     touch /root/.gui_gl_kgsl   # GL direto na GPU (recomendado upstream)
+        #     touch /root/.gui_gl_zink   # GL via zink -> Turnip
+        # v3.18 — os arquivos sao lidos no HOST (o bloco X roda pre-pivot) E
+        # dentro do container ($ROOTFS/root): antes o "touch" feito no terminal
+        # do container nao ativava nada, porque o script so olhava o /root do
+        # aparelho.
+        _gl_mode=""
+        if [ -e /root/.gui_gl_kgsl ] || [ -e "$ROOTFS/root/.gui_gl_kgsl" ]; then
+            _gl_mode="kgsl"
+        elif [ -e /root/.gui_gl_zink ] || [ -e "$ROOTFS/root/.gui_gl_zink" ]; then
+            _gl_mode="zink"
         fi
+        case "$_gl_mode" in
+            kgsl) GPU_ENV="TU_DEBUG=noconform MESA_LOADER_DRIVER_OVERRIDE=kgsl" ;;
+            zink) GPU_ENV="TU_DEBUG=noconform MESA_LOADER_DRIVER_OVERRIDE=zink" ;;
+            *)    GPU_ENV="TU_DEBUG=noconform" ;;
+        esac
+        bootinfo "X11: GL (OpenGL/GLES): ${_gl_mode:-llvmpipe/software} | Vulkan: Turnip/kgsl na GPU"
     # 1) GPU via kgsl (kernel downstream/híbrido): /dev/kgsl-3d0 presente e a
     #    Mesa custom com backend kgsl no rootfs. É o caminho do droidspaces:
     #    Turnip (Vulkan) + GL nativo via kgsl. Tem prioridade sobre /dev/dri,
@@ -948,7 +957,10 @@ EOF
     # Resumo de GPU vai pro log do container (bootinfo), não pro terminal.
     if [ "${HAS_KGSL_MESA:-0}" = "1" ] && [ -e /dev/kgsl-3d0 ]; then
         if [ "${GUI:-0}" = "1" ]; then
-            if [ -e /root/.gui_gl_zink ]; then
+            # v3.18 — mesma deteccao dos modos de GL (host + container)
+            if [ -e /root/.gui_gl_kgsl ] || [ -e "$ROOTFS/root/.gui_gl_kgsl" ]; then
+                bootinfo "GPU: kgsl ativo -> GL/GLES via kgsl; Vulkan Turnip na GPU"
+            elif [ -e /root/.gui_gl_zink ] || [ -e "$ROOTFS/root/.gui_gl_zink" ]; then
                 bootinfo "GPU: kgsl ativo -> GLX via zink (Turnip); Vulkan Turnip na GPU"
             else
                 bootinfo "GPU: kgsl ativo -> Vulkan Turnip na GPU; GL no X11 via llvmpipe"

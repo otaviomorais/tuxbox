@@ -720,3 +720,36 @@ genérica.
   primeiro container que tem xkb, então o Debian passa a funcionar sozinho
   assim que o Ubuntu rodar uma vez com a v3.16+ — mas, pelo display único, só
   um container por vez.
+
+### 10.o — v3.18 (APK `8e099be5`): GL na GPU — modo `kgsl` + leitura no container
+
+Campo: "o Turnip não funcionou, glmark2 subiu com llvmpipe". **Diagnóstico:**
+
+1. **`glmark2` é OpenGL, não Vulkan.** O padrão do projeto é GL/GLX em
+   **llvmpipe** (software) e **Vulkan na GPU via Turnip/kgsl** — por isso o
+   llvmpipe no glmark2 é o resultado **esperado**, não defeito do Turnip.
+2. **O Turnip está instalado.** O `mesa-for-android-container` (o pacote que o
+   app instala em "Instalar Mesa GPU") **traz o Turnip junto**: no
+   `mesa-26.3.0-devel-20260824` há `libvulkan_freedreno.so` (**17.420.912
+   bytes** — exatamente o tamanho presente no container),
+   `usr/share/vulkan/icd.d/freedreno_icd.aarch64.json` (api 1.4.359) e
+   `usr/share/drirc.d/00-turnip-defaults.conf`. O release `turnip-*` (3,4 MB) é
+   só a variante "Turnip sozinho" (lib de 17.340.312 bytes) — redundante.
+3. **Bug de usabilidade**: o script lia `/root/.gui_gl_zink` **no host** (o
+   bloco X roda antes do `pivot_root`), então o `touch` feito no terminal do
+   container nunca ativava nada.
+
+**v3.18**:
+- novo modo **`.gui_gl_kgsl`** → `MESA_LOADER_DRIVER_OVERRIDE=kgsl`, o uso
+  oficial do `mesa-for-android-container` (backend KGSL do Freedreno:
+  OpenGL/GLES **e** Vulkan na GPU, "eliminando a necessidade de Zink");
+- os dois marcadores (`.gui_gl_kgsl`, `.gui_gl_zink`) passam a ser lidos **no
+  host E dentro do container** (`$ROOTFS/root/…`);
+- o resumo de GPU no boot log passa a dizer o modo GL ativo explicitamente.
+
+Como validar:
+```bash
+vulkaninfo --summary               # deve listar Turnip/MESA_TURNIP + Adreno
+touch /root/.gui_gl_kgsl           # GL na GPU (reabra a aba --gui: lido no boot)
+glxinfo -B | grep -i renderer      # deve mostrar kgsl/zink, não llvmpipe
+```
