@@ -1,0 +1,416 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPLv3 or later
+# Copyright (C) 2026 LongQT-sea <long025733@gmail.com>
+#
+# tuxbox - chroot on steroid
+#
+# A ~200-line POSIX shell script that implements minimal Linux
+# container using namespaces, bind mounts, and pivot_root.
+#
+# No daemons. No D-Bus. No dependencies beyond a POSIX shell,
+# a few coreutils or busybox, and a kernel >= 4.19.
+
+#set -x # debug flag
+set -eu
+
+RED=$(printf '\033[31m')
+GREEN=$(printf '\033[32m')
+NC=$(printf '\033[0m')
+
+die() { printf '%sError: %s%s\n' "$RED" "$*" "$NC" >&2; exit 1; }
+info() { printf '%s==> %s%s\n' "$GREEN" "$*" "$NC" >&2; }
+warn() { printf '%sWarning: %s%s\n' "$RED" "$*" "$NC" >&2; }
+
+# Android quirks
+if [ -n "${ANDROID_ROOT:-}" ] && [ -n "${ANDROID_DATA:-}" ]; then
+    ANDROID=1
+    _PATH="/usr/sbin:/usr/bin:/sbin:/bin:/system/bin"
+
+    # Yes toybox does have pivot_root
+    pivot_root() { toybox pivot_root "$@"; }
+
+    # toybox mount is missing required features
+    if command -v busybox >/dev/null 2>&1; then
+        mount() { busybox mount "$@"; }
+    elif [ "$(command -v mount)" = "/system/bin/mount" ]; then
+        die "toybox mount is not supported"
+    fi
+fi
+
+if command -v unshare >/dev/null; then
+    unshare() { command unshare "$@"; }
+elif command -v busybox && busybox unshare --help >/dev/null 2>&1; then
+    unshare() { busybox unshare "$@"; }
+else
+    die "Need unshare command"
+fi
+
+# === Phase 2 ===
+if [ "${PHASE2:-}" = "1" ]; then
+    # Run inside a Linux namespace (at least a mount namespace)
+    ROOTFS="$1"
+    shift
+
+    if [ $# -eq 0 ]; then
+        if [ -x "$ROOTFS/bin/bash" ]; then
+            set -- /bin/bash -il
+        else
+            set -- /bin/sh -il
+        fi
+    fi
+
+    if [ "${UTS_NS:-}" = "1" ]; then
+        echo "$HOSTNAME" > /proc/sys/kernel/hostname
+        echo "$HOSTNAME" > "$ROOTFS/etc/hostname"
+        grep -q "127.0.1.1.*$HOSTNAME" "$ROOTFS/etc/hosts" 2>/dev/null || \
+            echo "127.0.1.1	$HOSTNAME" >> "$ROOTFS/etc/hosts"
+    fi
+
+    mount -o bind,private "$ROOTFS" "$ROOTFS"
+
+    # Android quirks
+    # /mnt on Android is a tmpfs mounted with restrictive flags (nosuid/nodev/noexec).
+    # Remount the rootfs bind mount explicitly with exec/suid/dev/rw, otherwise
+    # exec of /bin/sh inside the container fails with EACCES ("can't execute").
+    mount -o remount,exec,suid,dev,rw "$ROOTFS"
+
+    # This makes the `ip rule` command inside the container show human-readable rule name when using host network
+    # https://android.googlesource.com/platform/system/netd/+/refs/heads/main/server/RouteController.h#105
+    if [ "${ANDROID:-}" = "1" ]; then
+        mkdir -p "$ROOTFS/etc/iproute2"
+        touch "$ROOTFS/etc/iproute2/rt_tables"
+        mount -o bind /data/misc/net/rt_tables "$ROOTFS/etc/iproute2/rt_tables" 2>/dev/null \
+            || warn "/data/misc/net/rt_tables missing on host, skipping iproute2 tables"
+    fi
+
+    # Expose Android user 0 internal storage to the container
+    if [ "${ANDROID:-}" = "1" ] && [ -d /data/media/0 ]; then
+        mkdir -p "$ROOTFS/mnt/storage"
+        mount -o bind /data/media/0 "$ROOTFS/mnt/storage" 2>/dev/null \
+            || warn "could not bind /data/media/0 into container"
+    fi
+
+    # Optional: external microSD volume(s) too, mounted under /mnt/storage/
+    for sd in /storage/*; do
+        case "$(basename "$sd")" in
+            emulated|self) continue ;;
+        esac
+        [ -d "$sd" ] || continue
+        mkdir -p "$ROOTFS/mnt/storage/$(basename "$sd")"
+        mount -o bind "$sd" "$ROOTFS/mnt/storage/$(basename "$sd")" 2>/dev/null || true
+    done
+
+    mount -t proc -o nosuid,nodev,noexec proc "$ROOTFS/proc"
+    mount -t sysfs -o ro,nosuid,nodev,noexec sysfs "$ROOTFS/sys"
+
+    # cgroup2 (or v1 fallback) is optional for a plain shell; systemd needs it
+    # but the container must still start when the kernel lacks it.
+    if ! mount -t cgroup2 -o nosuid,noexec,nodev cgroup2 "$ROOTFS/sys/fs/cgroup" 2>/dev/null; then
+        mount -t cgroup -o nosuid,noexec,nodev cgroup "$ROOTFS/sys/fs/cgroup" 2>/dev/null \
+            || warn "cgroup filesystem unavailable, continuing without it"
+    fi
+    mount -t tmpfs -o nosuid,nodev,noatime tmpfs "$ROOTFS/tmp"
+    mount -t tmpfs -o rw,nosuid,nodev,mode=755 tmpfs "$ROOTFS/run"
+    mount -t tmpfs -o nosuid,mode=755,strictatime,size=65536k tmpfs "$ROOTFS/dev"
+
+    # Minimal /dev setup; a classic bind mount of /dev is usually overkill
+    mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm" "$ROOTFS/dev/net" "$ROOTFS/dev/mqueue"
+    mount -t tmpfs -o nosuid,noexec,nodev,mode=1777,size=524288k shm "$ROOTFS/dev/shm"
+
+    # POSIX message queues (mqueue fs) is not compiled into most Android kernels
+    # (ENODEV "No such device"). Keep the mount point as a plain directory then.
+    if ! mount -t mqueue -o rw,nosuid,nodev,noexec,relatime mqueue "$ROOTFS/dev/mqueue" 2>/dev/null; then
+        warn "mqueue not supported by kernel, /dev/mqueue stays an empty dir"
+    fi
+
+    mknod -m 666 "$ROOTFS/dev/null" c 1 3
+    mknod -m 666 "$ROOTFS/dev/zero" c 1 5
+    mknod -m 666 "$ROOTFS/dev/full" c 1 7
+    mknod -m 666 "$ROOTFS/dev/tty" c 5 0
+    mknod -m 666 "$ROOTFS/dev/fuse" c 10 229
+    mknod -m 666 "$ROOTFS/dev/random" c 1 8
+    mknod -m 666 "$ROOTFS/dev/urandom" c 1 9
+    mknod -m 620 "$ROOTFS/dev/console" c 136 0
+    mknod -m 666 "$ROOTFS/dev/net/tun" c 10 200
+
+    # GPU passthrough: bind host DRM nodes when present so Mesa's native
+    # drivers (freedreno/Adreno, panfrost/Mali) work; otherwise llvmpipe.
+    GPU_BOUND=0
+    HAS_KGSL_MESA=0
+    if [ -d /dev/dri ]; then
+        mkdir -p "$ROOTFS/dev/dri"
+        if mount -o bind /dev/dri "$ROOTFS/dev/dri" 2>&1; then
+            GPU_BOUND=1
+        else
+            echo "[tuxbox] aviso: bind de /dev/dri falhou (SELinux/mount negado?)" >&2
+        fi
+        for gpu_dev in kgsl-3d0 kgsl3d0 mali mali0 gpu; do
+            if [ -e "/dev/$gpu_dev" ]; then
+                mount -o bind "/dev/$gpu_dev" "$ROOTFS/dev/$gpu_dev" 2>/dev/null || true
+            fi
+        done
+    fi
+    # Adreno via kgsl (ROM híbrida/downstream ou kernel sem DRM): o node é criado
+    # DIRETO no tmpfs do container (major:minor lido do sysfs; fallback 511:0 do
+    # Adreno) — não depende do host ter criado /dev/kgsl-3d0 nem do bind. Se o
+    # host tiver o node, usa-o como fallback.
+    if [ -r /sys/class/kgsl/kgsl-3d0/dev ]; then
+        _kgsl_dev=$(cat /sys/class/kgsl/kgsl-3d0/dev 2>/dev/null || true)
+        case "$_kgsl_dev" in
+            *:*)
+                if mknod -m 666 "$ROOTFS/dev/kgsl-3d0" c "${_kgsl_dev%%:*}" "${_kgsl_dev##*:}" 2>/dev/null; then
+                    GPU_BOUND=1
+                    echo "[tuxbox] kgsl: node criado no container (${_kgsl_dev%%:*}:${_kgsl_dev##*:})"
+                fi
+                ;;
+        esac
+    elif [ -r /sys/class/kgsl/kgsl-3d0/gpu_model ]; then
+        if mknod -m 666 "$ROOTFS/dev/kgsl-3d0" c 511 0 2>/dev/null; then
+            GPU_BOUND=1
+            echo "[tuxbox] kgsl: node criado no container (fallback 511:0)"
+        fi
+    fi
+    if [ ! -e "$ROOTFS/dev/kgsl-3d0" ] && [ -e /dev/kgsl-3d0 ]; then
+        mount -o bind /dev/kgsl-3d0 "$ROOTFS/dev/kgsl-3d0" 2>/dev/null || true
+        GPU_BOUND=1
+    fi
+    if find "$ROOTFS/usr/lib" -maxdepth 3 -name '*kgsl*.so*' -print -quit 2>/dev/null | grep -q .; then
+        HAS_KGSL_MESA=1
+    fi
+    ln -sf pts/ptmx "$ROOTFS/dev/ptmx"
+    ln -sf /proc/self/fd "$ROOTFS/dev/fd"
+    ln -sf /proc/self/fd/0 "$ROOTFS/dev/stdin"
+    ln -sf /proc/self/fd/1 "$ROOTFS/dev/stdout"
+    ln -sf /proc/self/fd/2 "$ROOTFS/dev/stderr"
+
+#    mount -t devpts -o nosuid,noexec,newinstance,mode=620,ptmxmode=0666 devpts "$ROOTFS/dev/pts"
+    mount -o bind /dev/pts "$ROOTFS/dev/pts"
+    mount -o remount,ptmxmode=0666,mode=620 "$ROOTFS/dev/pts"
+
+    # Try hook pty -> /dev/console for console login, but that didn't work out, by masking console-getty
+    # at least we still have a console log with job control (Ctrl-C to shutdown systemd)
+    if [ -t 0 ]; then
+        mount -o bind "$(tty)" "$ROOTFS/dev/console"
+    fi
+
+    if [ -f "$ROOTFS/usr/lib/systemd/systemd" ]; then
+        ln -sf /dev/null "$ROOTFS/etc/systemd/system/console-getty.service"
+        ln -sf /dev/null "$ROOTFS/etc/systemd/system/systemd-firstboot.service"
+        ln -sf /dev/null "$ROOTFS/etc/systemd/system/systemd-networkd-wait-online.service"
+    fi
+
+    # Android quirks
+    if [ "${ANDROID:-}" = "1" ]; then
+        echo "0 2147483647" > "$ROOTFS/proc/sys/net/ipv4/ping_group_range"
+        export PATH="$_PATH" && unset LD_PRELOAD
+
+        # Android DNS: override the container resolv.conf with the device's real
+        # resolvers. Ubuntu images ship a stub pointing at 127.0.0.53
+        # (systemd-resolved), which does not exist inside the container, so DNS
+        # fails with "Temporary failure resolving".
+        dns=""
+        if [ -r /system/etc/resolv.conf ]; then
+            dns=$(sed -n 's/^[[:space:]]*nameserver[[:space:]]\+//p' /system/etc/resolv.conf 2>/dev/null || true)
+        fi
+        if [ -z "$dns" ]; then
+            for p in net.dns1 net.dns2 dhcp.wlan0.dns1 dhcp.eth0.dns1; do
+                v=$(getprop "$p" 2>/dev/null || true)
+                if [ -n "$v" ]; then
+                    dns="${dns:+$dns }$v"
+                fi
+            done
+        fi
+        if [ -z "$dns" ]; then
+            dns="1.1.1.1 8.8.8.8"
+        fi
+        rm -f "$ROOTFS/etc/resolv.conf"
+        {
+            echo "# generated by tuxbox"
+            for dns_server in $dns; do
+                echo "nameserver $dns_server"
+            done
+        } > "$ROOTFS/etc/resolv.conf" 2>/dev/null || warn "could not write $ROOTFS/etc/resolv.conf"
+
+        # Normalize perms that a sloppy extraction may have left loose:
+        # sudo.conf must not be world-writable, and apt wants the lists dir
+        # owned by _apt (else the "unsandboxed as root" warning on Ubuntu).
+        if [ -f "$ROOTFS/etc/sudo.conf" ]; then
+            chmod 0644 "$ROOTFS/etc/sudo.conf" 2>/dev/null || true
+        fi
+        if grep -qs '^_apt:' "$ROOTFS/etc/passwd"; then
+            chown -R _apt:root "$ROOTFS/var/lib/apt/lists" 2>/dev/null || true
+        fi
+    fi
+
+    # Ubuntu 25 Rust quirk
+    export PATH="$PATH:/lib/cargo/bin/coreutils"
+
+    mkdir -p "$ROOTFS/old_root" && cd "$ROOTFS"
+    pivot_root . old_root && cd /
+
+    # Mesa env vars para o driver nativo.
+    # 1) Sem /dev/dri (kernel Android com kgsl): usa o backend kgsl da Mesa
+    #    custom (mesa-for-android-container), se instalada no rootfs.
+    # 2) Com /dev/dri: o Mesa auto-detecta o driver pelo node DRM — EXCETO
+    #    kernels mainline >=6.5, que renomearam o driver msm -> msm_drm: o
+    #    loader do Mesa stock não mapeia "msm_drm" pra freedreno e cai em
+    #    llvmpipe. Nesse caso forçamos o driver pelo nome (freedreno/panfrost).
+    GPU_ENV=""
+    # 1) GPU via kgsl (kernel downstream/híbrido): /dev/kgsl-3d0 presente e a
+    #    Mesa custom com backend kgsl no rootfs. É o caminho do droidspaces:
+    #    Turnip (Vulkan) + GL nativo via kgsl. Tem prioridade sobre /dev/dri,
+    #    porque em ROMs híbridas o /dev/dri costuma ser só o display (SDE).
+    if [ "${HAS_KGSL_MESA:-0}" = "1" ] && [ -e /dev/kgsl-3d0 ]; then
+        GPU_ENV="MESA_LOADER_DRIVER_OVERRIDE=kgsl TU_DEBUG=noconform"
+    # 2) GPU via DRM (kernel mainline): /dev/dri exposto de verdade. Kernels
+    #    >=6.5 renomearam o driver msm -> msm_drm e o loader do Mesa stock não
+    #    mapeia esse nome; forçamos o driver conhecido (freedreno/panfrost).
+    elif [ -e /dev/dri/card0 ] || [ -e /dev/dri/renderD128 ]; then
+        DRM_DRV=""
+        for uevent in /sys/class/drm/*/device/uevent; do
+            [ -r "$uevent" ] || continue
+            DRM_DRV=$(sed -n 's/^DRIVER=//p' "$uevent" 2>/dev/null | head -1)
+            [ -n "$DRM_DRV" ] && break
+        done
+        case "$DRM_DRV" in
+            msm*|kgsl) GPU_ENV="MESA_LOADER_DRIVER_OVERRIDE=freedreno" ;;
+            panfrost|panthor) GPU_ENV="MESA_LOADER_DRIVER_OVERRIDE=panfrost" ;;
+        esac
+    fi
+
+    # Resumo de GPU exibido no boot, para diagnóstico rápido no terminal.
+    if [ "${HAS_KGSL_MESA:-0}" = "1" ] && [ -e /dev/kgsl-3d0 ]; then
+        echo "[tuxbox] GPU: /dev/kgsl-3d0 -> Mesa kgsl (Turnip via kgsl)"
+    elif [ -e /dev/dri/card0 ]; then
+        echo "[tuxbox] GPU: /dev/dri ligado -> DRM nativo${GPU_ENV:+ (override: ${GPU_ENV%% *})}"
+    else
+        echo "[tuxbox] GPU: sem GPU nativa -> llvmpipe (software)"
+    fi
+
+    # On Termux with tsu, chroot immediately after pivot_root is required
+    exec chroot . env -i \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        HOME=/root \
+        TERM=xterm-256color \
+        $GPU_ENV \
+        /bin/sh -c 'cd; umount -l /old_root && rmdir /old_root; exec "$@"' -- "$@"
+fi
+
+# === Phase 1 ===
+usage() {
+    cat <<EOF
+
+Usage: tuxbox [OPTIONS] <rootfs> [command...]
+
+Options:
+  -h, --help                  Show this help
+
+EOF
+    exit 0
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            ;;
+        -V|--version)
+            echo "tuxbox version $VERSION"
+            exit 0
+            ;;
+        -*)
+            die "Unknown option: $1"
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [ $# -eq 0 ]; then usage; fi
+
+ROOTFS="$1"
+shift
+
+[ -d "$ROOTFS" ] || die "Rootfs not found"
+
+[ "$(id -u)" -eq 0 ] || die "Must be root"
+
+# Custom ROMs often omit the /dev/kgsl-3d0 node from ueventd even though the
+# kernel has the GPU driver (CONFIG_QCOM_KGSL). Recreate it from sysfs; if the
+# kernel doesn't export a devt (missing 'dev' attr), fall back to the ROM's own
+# ueventd.rc entry, and finally to the classic 511:0 used by Qualcomm Adreno.
+if [ ! -e /dev/kgsl-3d0 ]; then
+    _kgsl_major=""
+    _kgsl_minor="0"
+    if [ -r /sys/class/kgsl/kgsl-3d0/dev ]; then
+        _kgsl_dev=$(cat /sys/class/kgsl/kgsl-3d0/dev 2>/dev/null || true)
+        case "$_kgsl_dev" in
+            *:*)
+                _kgsl_major="${_kgsl_dev%%:*}"
+                _kgsl_minor="${_kgsl_dev##*:}"
+                ;;
+        esac
+    fi
+    if [ -z "$_kgsl_major" ]; then
+        _ueventd_line=$(grep -h -m1 "^/dev/kgsl-3d0[[:space:]]" \
+            /vendor/ueventd.rc /ueventd.rc /system/etc/ueventd.rc \
+            2>/dev/null | head -1 || true)
+        _kgsl_major=$(echo "$_ueventd_line" | awk '{print $(NF-1)}')
+        _kgsl_minor=$(echo "$_ueventd_line" | awk '{print $NF}')
+        case "$_kgsl_major" in
+            ''|*[!0-9]*) _kgsl_major="511" ;;
+        esac
+        case "$_kgsl_minor" in
+            ''|*[!0-9]*) _kgsl_minor="0" ;;
+        esac
+    fi
+    if [ -n "$_kgsl_major" ]; then
+        mknod /dev/kgsl-3d0 c "$_kgsl_major" "$_kgsl_minor" 2>/dev/null || true
+        chmod 0666 /dev/kgsl-3d0 2>/dev/null || true
+        echo "[tuxbox] kgsl: criado /dev/kgsl-3d0 (${_kgsl_major}:${_kgsl_minor})"
+    fi
+fi
+
+# Require 2020+ Android devices
+kernel_version=$(uname -r)
+major=$(echo "$kernel_version" | cut -d. -f1)
+minor=$(echo "$kernel_version" | cut -d. -f2)
+if [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 19 ]; }; then
+    die "Kernel version must be >= 4.19"
+fi
+
+ROOTFS=$(cd "$ROOTFS" && pwd -P)
+HOSTNAME=$(basename "$ROOTFS" | tr '_' '-')
+
+check_ns() { unshare "$1" true 2>/dev/null; }
+
+check_ns -p && PID_NS=1
+check_ns -i && IPC_NS=1
+check_ns -u && UTS_NS=1
+check_ns -m && MOUNT_NS=1
+
+if unshare --root / true 2>/dev/null; then
+    FULL_UNSHARE=1
+    check_ns -T && TIME_NS=1
+    check_ns -C && CGROUP_NS=1
+fi
+
+[ "${PID_NS:-}" = 1 ] && ARGS="${ARGS:-} -p -f"
+[ "${IPC_NS:-}" = 1 ] && ARGS="${ARGS:-} -i"
+[ "${UTS_NS:-}" = 1 ] && ARGS="${ARGS:-} -u"
+[ "${MOUNT_NS:-}" = 1 ] && ARGS="${ARGS:-} -m"
+
+if [ "${FULL_UNSHARE:-}" = 1 ]; then
+    ARGS="${ARGS:-} --kill-child"
+    [ "${TIME_NS:-}" = 1 ] && ARGS="${ARGS:-} -T"
+    [ "${CGROUP_NS:-}" = 1 ] && ARGS="${ARGS:-} -C"
+fi
+
+# Start phase 2
+PHASE2=1 export PHASE2 HOSTNAME UTS_NS
+if [ "${MOUNT_NS:-}" = "1" ]; then
+    exec unshare $ARGS -- "$0" "$ROOTFS" "$@"
+else
+    die "Kernel lacks mount namespace support"
+fi

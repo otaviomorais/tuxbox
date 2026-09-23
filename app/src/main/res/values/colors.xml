@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- TuxBox palette — dark navy/roxo (protótipos) -->
+    <color name="tux_bg_top">#2C3E55</color>
+    <color name="tux_bg_mid">#141D38</color>
+    <color name="tux_bg_bottom">#0A0E24</color>
+
+    <color name="tux_surface">#181F3A</color>
+    <color name="tux_surface_alt">#1C2544</color>
+    <color name="tux_stroke">#2C3A5C</color>
+
+    <color name="tux_violet">#7C5CFF</color>
+    <color name="tux_violet_light">#B7A6FF</color>
+    <color name="tux_violet_container">#332A57</color>
+
+    <color name="tux_cyan">#7FD8F0</color>
+    <color name="tux_cyan_container">#163A49</color>
+
+    <color name="tux_green">#6FD98A</color>
+    <color name="tux_red">#FF7A8C</color>
+
+    <color name="tux_text">#E8ECF6</color>
+    <color name="tux_text_secondary">#93A1C0</color>
+
+    <color name="tux_nav_inactive">#7C8CB0</color>
+    <color name="tux_chip_bg">#141B2E</color>
+    <color name="tux_chip_stroke">#3A4A6E</color>
+</resources>

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.TuxBox" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/tux_violet</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorPrimaryContainer">@color/tux_violet_container</item>
+        <item name="colorOnPrimaryContainer">@color/tux_violet_light</item>
+
+        <item name="colorSecondary">@color/tux_cyan</item>
+        <item name="colorOnSecondary">@color/tux_bg_bottom</item>
+        <item name="colorSecondaryContainer">@color/tux_cyan_container</item>
+        <item name="colorOnSecondaryContainer">@color/tux_cyan</item>
+
+        <item name="colorTertiary">@color/tux_green</item>
+        <item name="colorOnTertiary">@color/tux_bg_bottom</item>
+
+        <item name="colorSurface">@color/tux_surface</item>
+        <item name="colorOnSurface">@color/tux_text</item>
+        <item name="colorOnSurfaceVariant">@color/tux_text_secondary</item>
+        <item name="colorOutline">@color/tux_stroke</item>
+
+        <item name="android:windowBackground">@drawable/bg_app</item>
+        <item name="android:statusBarColor">@color/tux_bg_top</item>
+        <item name="android:navigationBarColor">@color/tux_bg_bottom</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <!-- Checkbox do menu terminal: texto claro + marca violeta (menos "crua" que a default) -->
+    <style name="Widget.TuxBox.CheckBox" parent="Widget.Material3.CompoundButton.CheckBox">
+        <item name="android:textColor">@color/tux_text</item>
+        <item name="android:textSize">14sp</item>
+        <item name="buttonTint">@color/checkbox_tint</item>
+    </style>
+</resources>

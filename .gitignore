@@ -1,0 +1,5 @@
+# artefatos de build (geráveis com gradle)
+app/build/
+.gradle/
+*.o
+local.properties

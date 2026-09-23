@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- marca da checkbox: violeta quando marcada, cor de contorno quando não -->
+    <item android:color="@color/tux_violet" android:state_checked="true" />
+    <item android:color="@color/tux_text_secondary" />
+</selector>

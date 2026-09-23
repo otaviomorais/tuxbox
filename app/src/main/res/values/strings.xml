@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TuxBox</string>
+
+    <!-- bottom nav -->
+    <string name="tab_home">Início</string>
+    <string name="tab_download">Baixar</string>
+    <string name="tab_rootfs">Container</string>
+    <string name="tab_terminal">Terminal</string>
+    <string name="tab_about">Sobre</string>
+
+    <!-- home -->
+    <string name="home_container_status">STATUS DO CONTAINER</string>
+    <string name="home_ct_running">rodando</string>
+    <string name="home_ct_idle">parado</string>
+    <string name="home_ct_none">nenhum instalado</string>
+    <string name="root_title">Root</string>
+    <string name="root_ok">OK — root liberado</string>
+    <string name="root_blocked">BLOQUEADO — o app exige root (Magisk/KernelSU)</string>
+    <string name="btn_check">Verificar requisitos</string>
+    <string name="btn_reinstall">Instalar binários</string>
+    <string name="home_requirements">Requisitos do sistema</string>
+    <string name="home_log">Saída</string>
+    <string name="home_installed">binários instalados</string>
+    <string name="home_mount_missing">/data/local/tuxbox não existe — instale os binários primeiro</string>
+    <string name="home_gpu">GPU: %1$s</string>
+    <string name="home_gpu_sw">llvmpipe (sem GPU nativa)</string>
+    <string name="home_mesa_ok">Mesa kgsl instalada</string>
+    <string name="home_mesa_no">Mesa kgsl: não instalada</string>
+    <string name="btn_install_mesa">Instalar Mesa GPU</string>
+    <string name="mesa_title">Instalando Mesa GPU</string>
+    <string name="mesa_detect">Detectando distro do container…</string>
+    <string name="mesa_dl">Baixando driver Mesa…</string>
+    <string name="mesa_extract">Extraindo no container…</string>
+    <string name="mesa_done">Mesa GPU instalada! Feche e reabra o terminal do container para ativar.</string>
+    <string name="mesa_fail">Falha ao instalar Mesa: %1$s</string>
+    <string name="mesa_fail_title">Falha ao instalar Mesa</string>
+    <string name="mesa_close">Fechar</string>
+    <string name="mesa_unsupported">Distro não suportada (ID=%1$s). Suportadas: Debian, Ubuntu, Arch, Alpine, Fedora, Void.</string>
+
+    <!-- download -->
+    <string name="download_title">Baixar / importar container</string>
+    <string name="dl_distro">Distro</string>
+    <string name="dl_release">Release</string>
+    <string name="dl_arch">Arquitetura</string>
+    <string name="dl_btn_download">Baixar e instalar</string>
+    <string name="dl_btn_import">Importar arquivo (.tar.xz)</string>
+    <string name="dl_progress">Informe distro e release para começar.</string>
+    <string name="dl_size">tamanho: calculando…</string>
+    <string name="dl_fetch_index">Buscando índice de imagens…</string>
+    <string name="dl_downloading">Baixando %1$s …</string>
+    <string name="dl_extracting">Extraindo %1$d/%2$d arquivos …</string>
+    <string name="dl_moving">Movendo para /data/local/tuxbox …</string>
+    <string name="dl_done">Pronto! %1$s instalado em /data/local/tuxbox</string>
+    <string name="dl_err">Falha: %1$s</string>
+    <string name="dl_enter_name">Nome do container (opcional)</string>
+    <string name="dl_keep_alive">Manter arquivo .tar.xz baixado</string>
+
+    <!-- rootfs list -->
+    <string name="rootfs_title">Containers instalados</string>
+    <string name="rootfs_none">Nenhum container em /data/local/tuxbox ainda.\nUse a aba Baixar para instalar um.</string>
+    <string name="rootfs_btn_refresh">Atualizar</string>
+    <string name="rootfs_btn_terminal">Terminal</string>
+    <string name="rootfs_btn_delete">Deletar</string>
+    <string name="rootfs_confirm_delete">Deletar %1$s? Isso apaga tudo dentro do container.</string>
+    <string name="rootfs_delete_ok">%1$s deletado.</string>
+    <string name="rootfs_free">Armazenamento (/data/local): %1$s</string>
+
+    <!-- terminal -->
+    <string name="term_title">Terminal</string>
+    <string name="term_select">Container / ambiente</string>
+    <string name="term_no_rootfs">Nenhum container instalado — use a aba Baixar</string>
+    <string name="term_options">Opções da sessão</string>
+    <string name="term_net">Rede isolada (--net)</string>
+    <string name="term_gui">Interface gráfica (--gui)</string>
+    <string name="term_cmd">Comando (opcional)</string>
+    <string name="term_open">Nova aba</string>
+    <string name="term_close">Fechar aba</string>
+    <string name="term_status_launch">Iniciando ptyd …</string>
+    <string name="term_status_run">Conectado. Digite exit para sair.</string>
+    <string name="term_status_err">Erro: %1$s</string>
+    <string name="term_btn_esc">ESC</string>
+    <string name="term_btn_tab">TAB</string>
+    <string name="term_btn_ctrl">CTRL</string>
+    <string name="term_btn_alt">ALT</string>
+    <string name="term_btn_slash">/</string>
+    <string name="term_btn_pipe">|</string>
+    <string name="term_btn_tilde">~</string>
+    <string name="term_btn_minus">-</string>
+    <string name="term_btn_ctrlc">^C</string>
+    <string name="term_btn_ctrld">^D</string>
+    <string name="term_btn_left">◀</string>
+    <string name="term_btn_up">▲</string>
+    <string name="term_btn_down">▼</string>
+    <string name="term_btn_right">▶</string>
+    <string name="term_btn_home">Home</string>
+    <string name="term_btn_end">End</string>
+    <string name="term_btn_pgup">PGUP</string>
+    <string name="term_btn_pgdn">PGDN</string>
+    <string name="term_btn_del">DEL</string>
+    <string name="term_notif_channel">Terminal TuxBox</string>
+    <string name="term_notif_channel_desc">Mantém a sessão do container rodando em segundo plano</string>
+    <string name="term_notif_title">Terminal TuxBox ativo</string>
+    <string name="term_notif_text">Sessão em %1$s rodando em segundo plano</string>
+
+    <!-- about -->
+    <string name="about_title">Sobre o TuxBox</string>
+    <string name="about_body">O <b>TuxBox</b> roda containers Linux leves no seu Android usando namespaces de montagem (unshare + pivot_root), sem chroot nem truques.\n\n• <b>Baixar</b>: instala containers de distribuições Linux via linuxcontainers.org\n• <b>Container</b>: gerencia os containers instalados em /data/local/tuxbox\n• <b>Terminal</b>: emulador de terminal embutido (estilo Termux) conectado ao container via ptyd + su\n\nRequer root (Magisk ou KernelSU).</string>
+
+    <!-- text selection (usados pelo TerminalView do Termux) -->
+    <string name="copy_text">Copiar</string>
+    <string name="paste_text">Colar</string>
+    <string name="text_selection_more">Mais…</string>
+</resources>
