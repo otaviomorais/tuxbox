@@ -721,6 +721,96 @@ EOF
             fi
             if [ "$_X11_LINK" = "1" ]; then
                 _tx11_ok=1
+                # v3.14 — GERENCIADOR DE JANELAS AUTOMATICO. Antes era preciso
+                # digitar `openbox --sm-disable &` a CADA aba. Ele sobe junto
+                # com o X, no mesmo namespace/ciclo de vida (se a aba que subiu
+                # o X fechar, o WM morre junto e a proxima aba o religa).
+                # Escolha do WM:
+                #   /root/.wm com o comando  -> usa esse ("i3", "fluxbox", ...)
+                #   /root/.wm vazio/"none"   -> nao sobe WM nenhum
+                #   sem /root/.wm            -> openbox --sm-disable (padrao)
+                # Roda via `chroot $ROOTFS` (libs do container) + `setsid`
+                # (independente do shell da aba). Singleton por /proc: como o
+                # display :0 e compartilhado, dois WMs brigariam entre si.
+                _wm_cmd=""; _wm_bin=""
+                if [ -f "$ROOTFS/root/.wm" ]; then
+                    _wm_cmd="$(sed -n 1p "$ROOTFS/root/.wm" 2>/dev/null | tr -d '\r')"
+                    case "$_wm_cmd" in
+                        ""|none|off) _wm_cmd="" ;;
+                        *) _wm_bin="${_wm_cmd%% *}" ;;
+                    esac
+                elif [ -x "$ROOTFS/usr/bin/openbox" ]; then
+                    _wm_cmd="openbox --sm-disable"
+                    _wm_bin="openbox"
+                fi
+                if [ -n "$_wm_cmd" ]; then
+                    # v3.14 — singleton: casa pelo argv[0] (o binario do WM),
+                    # e nao por "/openbox" em qualquer lugar da cmdline — senao
+                    # qualquer shell que tenha o nome no texto (o proprio script
+                    # de teste, um grep, um bash -c) contaria como WM ativo.
+                    _wm_pid=""
+                    for _f in /proc/[0-9]*/cmdline; do
+                        _a0="$(tr '\0' '\n' < "$_f" 2>/dev/null | sed -n 1p)" || continue
+                        [ -n "$_a0" ] || continue
+                        case "${_a0##*/}" in
+                            "$_wm_bin")
+                                _wm_pid="${_f#/proc/}"
+                                _wm_pid="${_wm_pid%/cmdline}"
+                                break ;;
+                        esac
+                    done
+                    if [ -n "$_wm_pid" ]; then
+                        bootinfo "X11: gerenciador de janelas ja ativo ($_wm_cmd, pid $_wm_pid)"
+                    else
+                        _wm_rel=""
+                        for _d in usr/bin bin usr/local/bin; do
+                            if [ -x "$ROOTFS/$_d/$_wm_bin" ]; then
+                                _wm_rel="$_d/$_wm_bin"
+                                break
+                            fi
+                        done
+                        if [ -z "$_wm_rel" ]; then
+                            bootinfo "X11: gerenciador de janelas ausente ($_wm_cmd) — instale: apt install -y openbox"
+                        else
+                            # env do proprio container (o chroot roda no rootfs;
+                            # /usr/bin/env nao e garantido em toda distro)
+                            _wm_env="/usr/bin/env"
+                            for _d in usr/bin bin usr/local/bin; do
+                                if [ -x "$ROOTFS/$_d/env" ]; then
+                                    _wm_env="$_d/env"
+                                    break
+                                fi
+                            done
+                            # v3.14 — caminhos ABSOLUTOS dentro do chroot: com
+                            # caminho relativo o exec falha (o CWD nao existe
+                            # mais depois do chroot) — "No such file or
+                            # directory" no log do WM.
+                            setsid chroot "$ROOTFS" "/$_wm_env" -i \
+                                DISPLAY=:0 XKB_CONFIG_ROOT=/usr/share/X11/xkb \
+                                XDG_RUNTIME_DIR=/run/user/0 HOME=/root \
+                                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                                "/$_wm_rel" ${_wm_cmd#"$_wm_bin"} \
+                                >> "$ROOTFS/var/log/x11-wm.log" 2>&1 < /dev/null &
+                            sleep 0.6
+                            # setsid pode ter forkado: procura o pid real pelo argv[0]
+                            for _f in /proc/[0-9]*/cmdline; do
+                                _a0="$(tr '\0' '\n' < "$_f" 2>/dev/null | sed -n 1p)" || continue
+                                [ -n "$_a0" ] || continue
+                                case "${_a0##*/}" in
+                                    "$_wm_bin")
+                                        _wm_pid="${_f#/proc/}"
+                                        _wm_pid="${_wm_pid%/cmdline}"
+                                        break ;;
+                                esac
+                            done
+                            if [ -n "$_wm_pid" ]; then
+                                bootinfo "X11: gerenciador de janelas iniciado: $_wm_cmd (pid $_wm_pid)"
+                            else
+                                warn "gerenciador de janelas nao subiu: $_wm_cmd (log: /var/log/x11-wm.log)"
+                            fi
+                        fi
+                    fi
+                fi
                 # Abre a tela do termux-x11 (fica em primeiro plano no aparelho).
                 am start --user 0 -n com.termux.x11/com.termux.x11.MainActivity \
                     >/dev/null 2>&1 || true

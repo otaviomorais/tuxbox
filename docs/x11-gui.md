@@ -616,3 +616,46 @@ Arquitetura final validada: scratch do servidor em
 persistente em `$ROOTFS/var/lib/tuxbox-x11-state` (lock/xkb/log, fora do
 TMPDIR que o X apaga), exposição via symlink `/tmp/.X11-unix/X0`, watchdog
 v3.9 com restore serializado por flock.
+
+### 10.k — v3.13 (APK `a476e59c`): notificação persistente (sessão em 2º plano)
+
+A notificação do foreground service (o que segura a sessão com o app em
+background) **não aparecia**. Causa: `POST_NOTIFICATIONS` era pedida no
+**lançamento** do app, sem contexto; negada uma vez, o Android não pede mais e
+o app não tinha como avisar — a sessão ficava vulnerável em silêncio.
+
+- pedido da permissão movido para o Terminal, no momento em que a sessão começa;
+- `TerminalService.notificationsVisible()` detecta permissão/canal bloqueados e
+  mostra um diálogo com botão que abre as configurações de notificação do app
+  (`Toast.setAction` é `@hide` no framework, por isso o diálogo);
+- manifest: `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` (exigida no Android 14+ para FGS
+  `specialUse`; sem ela o `startForeground` é recusado);
+- `startForegroundService`/`startForeground` em try-catch — notificação nunca
+  derruba a sessão;
+- `START_NOT_STICKY` → **`START_STICKY`**: serviço é reiniciado se o LMK matar.
+
+### 10.l — v3.14 (APK `c92763cf`): gerenciador de janelas automático
+
+Antes era preciso digitar `openbox --sm-disable &` em **cada** aba. Agora o WM
+sobe junto com o X, no mesmo namespace/ciclo de vida (se a aba que subiu o X
+fechar, o WM morre junto e a próxima aba o religa).
+
+| Estado | Comportamento |
+|---|---|
+| `/root/.wm` com comando (`i3`, `fluxbox`, …) | usa esse WM |
+| `/root/.wm` vazio ou `none` | não sobe WM |
+| sem `/root/.wm` | `openbox --sm-disable` se estiver instalado |
+
+Implementação: `setsid chroot "$ROOTFS" /usr/bin/env -i DISPLAY=:0 … /usr/bin/openbox`
+— o `chroot` dá as libs do container e o `setsid` desliga do shell da aba.
+Log do WM em `/var/log/x11-wm.log`; status no `tuxbox-boot.log`
+(`X11: gerenciador de janelas iniciado: … (pid N)` / `já ativo` / `ausente`).
+
+Dois bugs encontrados testando o bloco com mksh + socket X simulado no host:
+
+1. **singleton falso positivo** — casava `/openbox` em qualquer lugar da
+   cmdline (até no `bash -c` do teste), declarando WM ativo indevidamente.
+   Corrigido para casar pelo **argv[0]** (o binário do WM).
+2. **caminho relativo no `chroot`** — `usr/bin/env` relativo falhava com ENOENT
+   (depois do chroot o CWD não existe mais). Corrigido para caminho **absoluto**
+   dentro do chroot.
