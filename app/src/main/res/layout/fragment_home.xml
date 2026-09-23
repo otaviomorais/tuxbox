@@ -99,6 +99,26 @@
                     app:cornerRadius="20dp"
                     app:strokeColor="@color/tux_violet"
                     app:strokeWidth="1dp" />
+
+                <!-- v3.21: diagnóstico da GPU em um toque (vulkaninfo/glxinfo/vkmark) -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnGpuDiag"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textAllCaps="false"
+                    android:minWidth="0dp"
+                    android:minHeight="0dp"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:text="@string/btn_gpu_diag"
+                    android:textColor="@color/tux_text_secondary"
+                    android:textSize="13sp"
+                    android:visibility="gone"
+                    app:backgroundTint="@android:color/transparent"
+                    app:cornerRadius="20dp"
+                    app:strokeColor="@color/tux_stroke"
+                    app:strokeWidth="1dp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

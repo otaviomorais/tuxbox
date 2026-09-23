@@ -31,6 +31,12 @@
     <!-- v3.20: o apt sobrescreveu o Turnip/backend KGSL pelo pacote da distro -->
     <string name="home_turnip_stolen">Turnip sobrescrito pelo apt — reinstale</string>
     <string name="btn_reinstall_mesa">Reinstalar Mesa GPU</string>
+    <!-- v3.21: estado real das duas APIs de GPU, no card -->
+    <string name="home_gpu_ok_both">GL e Vulkan na GPU</string>
+    <string name="home_gpu_gl_only">GL na GPU (Vulkan ausente)</string>
+    <string name="btn_gpu_diag">Diagnóstico da GPU</string>
+    <string name="gpu_diag_title">Diagnóstico da GPU</string>
+    <string name="gpu_diag_running">Coletando informações da GPU…</string>
     <string name="mesa_title">Instalando Mesa GPU</string>
     <string name="mesa_detect">Detectando distro do container…</string>
     <string name="mesa_dl">Baixando driver Mesa…</string>

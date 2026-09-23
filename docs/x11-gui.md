@@ -795,6 +795,43 @@ sobrescrito pelo apt e era preciso reinstalar. Beco sem saída.
   **"Turnip sobrescrito pelo apt — reinstale"** quando detecta o tamanho da
   distro — o app passa a *saber* que o driver Vulkan não é o correto.
 
+### 10.r — v3.21 (APK `2f51c25e`): GPU validada em campo + card e diagnóstico
+
+**Validação em campo (debian-trixie, POCO F3 / Adreno 650):**
+
+```console
+$ glxinfo -B | grep -i renderer
+OpenGL renderer string: FD650                      # freedreno no backend KGSL
+$ glmark2
+GL_VENDOR:   freedreno
+GL_RENDERER: FD650
+GL_VERSION:  4.6 Mesa 26.3.0-devel (git-98f3d6229d)
+[build] use-vbo=false: FPS: 655 FrameTime: 1.529 ms
+$ vkmark
+Vendor ID:      0x5143                              # Qualcomm
+Device ID:      0x6050002                           # Adreno 650
+Device Name:    Turnip Adreno (TM) 650
+Driver Version: 109060195
+[vertex] device-local=true: FPS: 4115 FrameTime: 0.243 ms
+```
+
+**OpenGL e Vulkan ambos na GPU nativa** — objetivo do projeto atingido. (A
+reinstalação pela v3.20 + `dpkg-divert` da v3.19 resolveu o Turnip roubado
+pelo apt; o aviso `MESA-LOADER: failed to retrieve device information` é
+inofensivo — o driver carregou e renderizou.)
+
+**v3.21** transforma isso em algo visível no app, sem depender de terminal:
+
+- **Card da Home** passa a dizer o estado real das **duas** APIs:
+  "GL e Vulkan na GPU" (verde) / "GL na GPU (Vulkan ausente)" / "Turnip
+  sobrescrito pelo apt — reinstale";
+- **botão "Diagnóstico da GPU"** mostra num diálogo, com um toque:
+  `/dev/kgsl*`, `/dev/ion`, `/dev/dri`; os **ICDs Vulkan** com a `library_path`
+  resolvida; os **drivers** com tamanho (lib do Turnip ~17,4 MB = o certo,
+  ~10,5 MB = o da distro); e a saída de `vulkaninfo --summary`, `vkmark`,
+  `glxinfo -B` e `eglinfo` — a evidência que hoje exigia digitar cada comando
+  no terminal.
+
 **v3.19 — proteção durável no APK**: antes de extrair, o app roda
 `dpkg-divert --add --rename --divert` em
 `/usr/lib/<triplet>/libvulkan_freedreno.so` e

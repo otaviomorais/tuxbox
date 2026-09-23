@@ -37,7 +37,7 @@ import sh.tuxbox.root.util.TuxPaths;
 public class HomeFragment extends Fragment {
 
     private TextView tvRootStatus, tvLog, tvHeroName, tvHeroStatus, tvHeroGpu;
-    private MaterialButton btnInstall, btnInstallGpu;
+    private MaterialButton btnInstall, btnInstallGpu, btnGpuDiag;
     private View dotHero;
 
     /** Nome do container mostrado no cartão hero (alvo do botão de instalar Mesa). */
@@ -56,6 +56,7 @@ public class HomeFragment extends Fragment {
         tvLog = view.findViewById(R.id.tvLog);
         btnInstall = view.findViewById(R.id.btnInstall);
         btnInstallGpu = view.findViewById(R.id.btnInstallGpu);
+        btnGpuDiag = view.findViewById(R.id.btnGpuDiag);
         tvHeroName = view.findViewById(R.id.tvHeroName);
         tvHeroStatus = view.findViewById(R.id.tvHeroStatus);
         tvHeroGpu = view.findViewById(R.id.tvHeroGpu);
@@ -63,6 +64,7 @@ public class HomeFragment extends Fragment {
 
         btnInstall.setOnClickListener(v -> installBinaries());
         btnInstallGpu.setOnClickListener(v -> installMesa());
+        btnGpuDiag.setOnClickListener(v -> gpuDiagnostics());
 
         checkAll();
         refreshHero();
@@ -141,6 +143,60 @@ public class HomeFragment extends Fragment {
     }
 
     /**
+     * v3.21 — Diagnóstico da GPU em um toque: mostra em diálogo o que o próprio
+     * container enxerga (vulkaninfo/vkmark para Vulkan, glxinfo/eglinfo para
+     * GL/EGL), mais o inventário dos arquivos que decidem o que roda na GPU.
+     * Antes era preciso abrir um terminal e digitar cada comando na mão — e o
+     * erro mais comum (apt sobrescrever o Turnip) só aparecia no
+     * `vulkaninfo`, invisível no app.
+     */
+    private void gpuDiagnostics() {
+        final String env = heroEnv;
+        if (env == null) { Toast.makeText(requireContext(), R.string.home_ct_none, Toast.LENGTH_SHORT).show(); return; }
+        final String base = TuxPaths.ROOTFS_BASE;
+        final String B = base + "/" + env;
+        btnGpuDiag.setEnabled(false);
+        Toast.makeText(requireContext(), R.string.gpu_diag_running, Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            final String out = RootShell.run(
+                    // inventário: quem manda no GL (kgsl) e no Vulkan (Turnip)
+                    "echo '== NODES =='; ls -l /dev/kgsl* /dev/ion /dev/dri 2>/dev/null;"
+                    + " echo '== ICD VULKAN ==';"
+                    + " for i in " + B + "/etc/vulkan/icd.d/*.json " + B + "/usr/share/vulkan/icd.d/*.json; do"
+                    + "   [ -f \"$i\" ] && echo \"$(basename \"$i\") -> $(sed -n 's/.*library_path\"[^\\\"]*\"\\([^\\\"]*\\)\".*/\\1/p' \"$i\")\";"
+                    + " done;"
+                    + " echo '== DRIVERS ==';"
+                    + " for l in $(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo $(uname -m)-linux-gnu); do :; done;"
+                    + " T=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo $(uname -m)-linux-gnu);"
+                    + " ls -l " + B + "/usr/lib/$T/libvulkan_freedreno.so " + B + "/usr/lib/$T/libvulkan_lvp.so "
+                    + B + "/usr/lib/$T/dri/kgsl_dri.so " + B + "/usr/lib/$T/libgallium-26.3.0-devel.so 2>/dev/null;"
+                    + " echo '== VULKANINFO ==';"
+                    + " if [ -x " + B + "/usr/local/bin/vulkaninfo ]; then chroot " + B + " /usr/local/bin/vulkaninfo --summary 2>&1 | head -20;"
+                    + " elif command -v vulkaninfo >/dev/null 2>&1; then chroot " + B + " sh -c 'vulkaninfo --summary' 2>&1 | head -20;"
+                    + " else echo '(vulkaninfo nao instalado)'; fi;"
+                    + " echo '== VKMARK ==';"
+                    + " if [ -x " + B + "/usr/local/bin/vkmark ]; then timeout 60 chroot " + B + " /usr/local/bin/vkmark 2>&1 | head -12;"
+                    + " else echo '(vkmark nao instalado)'; fi;"
+                    + " echo '== GLXINFO ==';"
+                    + " if [ -x " + B + "/usr/local/bin/glxinfo ]; then chroot " + B + " /usr/local/bin/glxinfo -B 2>&1 | head -16;"
+                    + " else echo '(glxinfo nao instalado)'; fi;"
+                    + " echo '== EGLINFO ==';"
+                    + " if [ -x " + B + "/usr/local/bin/eglinfo ]; then chroot " + B + " /usr/local/bin/eglinfo 2>&1 | grep -iE 'renderer|version|vendor' | head -8;"
+                    + " else echo '(eglinfo nao instalado)'; fi;");
+            runOnUi(() -> {
+                if (!isAdded()) return;
+                btnGpuDiag.setEnabled(true);
+                mesaLog("== GPU DIAG ==\n" + out);
+                new AlertDialog.Builder(requireContext())
+                        .setTitle(R.string.gpu_diag_title)
+                        .setMessage(out)
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show();
+            });
+        }).start();
+    }
+
+    /**
      * v3.20 — {@code turnip} é o tamanho (em bytes) do libvulkan_freedreno.so no
      * container. O build do mesa-for-android-container (backend KGSL, o que
      * funciona) tem ~17,3-17,5 MB; o do pacote da distro (mesa-vulkan-drivers)
@@ -187,13 +243,24 @@ public class HomeFragment extends Fragment {
         boolean turnipOk = turnipBytes >= 15_000_000L;
         boolean turnipStolen = mesaOk && !turnipOk;
 
-        String state = mesaOk
-                ? (turnipOk ? getString(R.string.home_mesa_ok)
-                             : getString(R.string.home_turnip_stolen))
-                : getString(R.string.home_mesa_no);
+        // v3.21 — rótulo único com o estado real das DUAS APIs de GPU.
+        //  - GL/GLES: depende do *kgsl*.so (freedreno/kgsl na GPU)
+        //  - Vulkan:  depende do lib do Turnip (não do apt ter roubado)
+        String state;
+        if (!hwGpu) {
+            state = getString(R.string.home_mesa_no);
+        } else if (!mesaOk) {
+            state = getString(R.string.home_mesa_no);
+        } else if (turnipOk) {
+            state = getString(R.string.home_gpu_ok_both);
+        } else if (turnipBytes > 0) {
+            state = getString(R.string.home_turnip_stolen);
+        } else {
+            state = getString(R.string.home_gpu_gl_only);
+        }
         tvHeroGpu.setText(gpuLabel + "  ·  " + state);
         tvHeroGpu.setTextColor(getResources().getColor(
-                turnipOk ? R.color.tux_green : (hwGpu ? R.color.tux_violet_light : R.color.tux_text_secondary)));
+                (mesaOk && turnipOk) ? R.color.tux_green : (hwGpu ? R.color.tux_violet_light : R.color.tux_text_secondary)));
         tvHeroGpu.setVisibility(View.VISIBLE);
 
         // v3.20 — botão SEMPRE disponível quando há GPU nativa: "Instalar Mesa GPU"
@@ -203,6 +270,7 @@ public class HomeFragment extends Fragment {
         // refazer a instalação.
         btnInstallGpu.setText(mesaOk ? R.string.btn_reinstall_mesa : R.string.btn_install_mesa);
         btnInstallGpu.setVisibility(hwGpu ? View.VISIBLE : View.GONE);
+        btnGpuDiag.setVisibility(hwGpu ? View.VISIBLE : View.GONE);
     }
 
     /** Transforma a saída bruta do host numa etiqueta legível ("Adreno650v3" → "Adreno 650 v3 (kgsl)"). */
