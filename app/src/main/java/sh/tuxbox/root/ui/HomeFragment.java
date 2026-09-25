@@ -343,14 +343,22 @@ public class HomeFragment extends Fragment {
                 // 1) Detecção da distro: ID / ID_LIKE / VERSION_CODENAME do
                 // os-release + fallback por gerenciador de pacotes.
                 setMesaStatus(getString(R.string.mesa_detect));
+                String rootfs = base + "/" + env;
                 String osrel = RootShell.run(
-                        "for k in ID ID_LIKE VERSION_CODENAME; do v=$(sed -n \"s/^$k=//p\" '" + base + "/" + env
-                                + "/etc/os-release' 2>/dev/null | tr -d '\\\"' | head -n1); echo \"$k=$v\"; done;"
-                                + " if [ -x '" + base + "/" + env + "/usr/bin/dpkg' ] || [ -x '" + base + "/" + env + "/usr/bin/apt' ]; then echo PKG=debian;"
-                                + " elif [ -x '" + base + "/" + env + "/sbin/apk' ]; then echo PKG=alpine;"
-                                + " elif [ -x '" + base + "/" + env + "/usr/bin/pacman' ]; then echo PKG=arch;"
-                                + " elif [ -x '" + base + "/" + env + "/usr/bin/dnf' ] || [ -x '" + base + "/" + env + "/bin/dnf' ]; then echo PKG=fedora;"
-                                + " elif [ -x '" + base + "/" + env + "/sbin/xbps-install' ]; then echo PKG=void; fi");
+                        "echo '@@OSBEGIN@@'; cat " + shellQuote(rootfs + "/etc/os-release")
+                                + " 2>/dev/null; echo '@@OSEND@@';"
+                                + " if [ -x " + shellQuote(rootfs + "/usr/bin/dpkg")
+                                + " ] || [ -x " + shellQuote(rootfs + "/usr/bin/apt")
+                                + " ]; then echo '@@PKG@@=debian';"
+                                + " elif [ -x " + shellQuote(rootfs + "/sbin/apk")
+                                + " ]; then echo '@@PKG@@=alpine';"
+                                + " elif [ -x " + shellQuote(rootfs + "/usr/bin/pacman")
+                                + " ]; then echo '@@PKG@@=arch';"
+                                + " elif [ -x " + shellQuote(rootfs + "/usr/bin/dnf")
+                                + " ] || [ -x " + shellQuote(rootfs + "/bin/dnf")
+                                + " ]; then echo '@@PKG@@=fedora';"
+                                + " elif [ -x " + shellQuote(rootfs + "/sbin/xbps-install")
+                                + " ]; then echo '@@PKG@@=void'; fi");
                 String[] idc = parseOsRelease(osrel);
                 mesaLog("distro: id=" + (idc[0] == null ? "?" : idc[0])
                         + " id_like=" + (idc[1] == null ? "" : idc[1])
@@ -487,19 +495,41 @@ public class HomeFragment extends Fragment {
     /** Lê os campos ID / ID_LIKE / VERSION_CODENAME / PKG da saída do host. */
     private String[] parseOsRelease(String raw) {
         String id = null, idLike = null, code = null, pkg = null;
-        for (String line : raw.split("\n")) {
+        boolean inOs = false;
+        for (String line : raw.split("\\r?\\n")) {
             String l = line.trim();
-            if (l.isEmpty() || l.startsWith("$ ") || l.startsWith("[exit=") || l.startsWith("ERR:")) continue;
-            if (l.startsWith("PKG=")) pkg = l.substring(4).trim();
-            else if (l.startsWith("ID_LIKE=")) idLike = l.substring(8).trim();
-            else if (l.startsWith("ID=")) id = l.substring(3).trim();
-            else if (l.startsWith("VERSION_CODENAME=")) code = l.substring(l.indexOf('=') + 1).trim();
+            if (l.equals("@@OSBEGIN@@")) { inOs = true; continue; }
+            if (l.equals("@@OSEND@@")) { inOs = false; continue; }
+            if (l.startsWith("@@PKG@@=")) {
+                pkg = cleanOsValue(l.substring(8));
+                continue;
+            }
+            if (!inOs || l.isEmpty() || l.startsWith("$ ") || l.startsWith("[exit=") || l.startsWith("ERR:")) continue;
+            if (l.startsWith("ID_LIKE=")) idLike = cleanOsValue(l.substring(8));
+            else if (l.startsWith("ID=")) id = cleanOsValue(l.substring(3));
+            else if (l.startsWith("VERSION_CODENAME=")) code = cleanOsValue(l.substring(l.indexOf('=') + 1));
         }
         return new String[]{emptyToNull(id), emptyToNull(idLike), emptyToNull(pkg), emptyToNull(code)};
     }
 
+    private static String cleanOsValue(String value) {
+        String s = value == null ? "" : value.trim();
+        if (s.length() >= 2) {
+            char first = s.charAt(0), last = s.charAt(s.length() - 1);
+            if ((first == '\'' && last == '\'') || (first == '"' && last == '"')) {
+                s = s.substring(1, s.length() - 1).trim();
+            }
+        }
+        return s;
+    }
+
     private static String emptyToNull(String s) {
         return (s == null || s.isEmpty()) ? null : s;
+    }
+
+    private static String shellQuote(String value) {
+        if (value == null) return "''";
+        return "'" + value.replace("'", "'\\''") + "'";
     }
 
     /**
@@ -509,33 +539,32 @@ public class HomeFragment extends Fragment {
      * ubuntu_{noble,questing,resolute}, archlinux, alpine_3.24, fedora_{43,44}, void.
      */
     private String[] distroCandidates(String[] idc) {
-        String id = idc[0];
-        if (id == null && idc[1] != null) {
-            String like = idc[1].toLowerCase(Locale.US);
+        String id = canonicalDistro(idc[0]);
+        String like = idc[1] == null ? "" : idc[1].toLowerCase(Locale.US);
+
+        // ID can be malformed when a host shell concatenates command output
+        // (for example "archarm"). Prefer ID_LIKE/package-manager detection
+        // whenever it gives a known family.
+        if (!isSupportedDistro(id)) {
             if (like.contains("debian") || like.contains("ubuntu")) id = "debian";
             else if (like.contains("rhel") || like.contains("fedora")) id = "fedora";
+            else id = canonicalDistro(idc[2]);
         }
-        if (id == null) id = idc[2]; // fallback pelo gerenciador de pacotes
-        if (id == null) return null;
-        String c = idc[3] == null ? "" : idc[3].toLowerCase(Locale.US);
-        switch (id.trim().toLowerCase(Locale.US)) {
+        if (!isSupportedDistro(id)) return null;
+
+        String c = idc[3] == null ? "" : cleanOsValue(idc[3]).toLowerCase(Locale.US);
+        switch (id) {
             case "debian":
-                if (c.equals("trixie")) return new String[]{"debian_trixie"};
                 return new String[]{"debian_trixie"};
             case "ubuntu":
                 if (c.equals("resolute")) return new String[]{"ubuntu_resolute", "ubuntu_noble", "ubuntu_questing"};
                 if (c.equals("questing")) return new String[]{"ubuntu_questing", "ubuntu_noble", "ubuntu_resolute"};
-                if (c.equals("noble")) return new String[]{"ubuntu_noble", "ubuntu_resolute", "ubuntu_questing"};
                 return new String[]{"ubuntu_noble", "ubuntu_resolute", "ubuntu_questing"};
             case "arch":
                 return new String[]{"archlinux"};
             case "alpine":
                 return new String[]{"alpine_3.24"};
             case "fedora":
-            case "centos":
-            case "rhel":
-            case "rocky":
-            case "almalinux":
                 if (c.equals("43")) return new String[]{"fedora_43", "fedora_44"};
                 return new String[]{"fedora_44", "fedora_43"};
             case "void":
@@ -543,6 +572,23 @@ public class HomeFragment extends Fragment {
             default:
                 return null;
         }
+    }
+
+    private static String canonicalDistro(String value) {
+        String s = cleanOsValue(value).toLowerCase(Locale.US);
+        if (s.startsWith("arch")) return "arch";
+        if (s.startsWith("debian")) return "debian";
+        if (s.startsWith("ubuntu")) return "ubuntu";
+        if (s.startsWith("alpine")) return "alpine";
+        if (s.startsWith("fedora") || s.startsWith("centos") || s.startsWith("rhel")
+                || s.startsWith("rocky") || s.startsWith("almalinux")) return "fedora";
+        if (s.startsWith("void")) return "void";
+        return s;
+    }
+
+    private static boolean isSupportedDistro(String id) {
+        return "debian".equals(id) || "ubuntu".equals(id) || "arch".equals(id)
+                || "alpine".equals(id) || "fedora".equals(id) || "void".equals(id);
     }
 
     /**
