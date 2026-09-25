@@ -34,7 +34,18 @@ make_rootfs() {
     [ "$_pacman" = "pacman" ] && {
         printf '#!/bin/sh\nexit 0\n' >"$_d/usr/bin/pacman"
         chmod 755 "$_d/usr/bin/pacman"
-        printf '[options]\nHoldPkg = pacman glibc\n' >"$_d/etc/pacman.conf"
+        # CONF_MODE=strict reproduz o bug real: /etc/pacman.conf de fabrica do
+        # Arch (SigLevel estrita, sem TrustAll, sem DisableSandbox).
+        case "${CONF_MODE:-relaxed}" in
+            strict) cat >"$_d/etc/pacman.conf" <<'C'
+[options]
+HoldPkg     = pacman glibc
+SigLevel    = Required DatabaseOptional
+LocalFileSigLevel = Optional
+C
+            ;;
+            *) printf '[options]\nHoldPkg = pacman glibc\n' >"$_d/etc/pacman.conf" ;;
+        esac
     }
     if [ "$_libs" = "libs" ]; then
         : >"$_d/usr/lib/libxcb.so.1"
@@ -202,6 +213,58 @@ if [ "${RUN_ARCH_TAR_TEST:-0}" = "1" ] && [ -r "$ARCH_TAR" ]; then
 else
     printf '  skip imagem Arch real (RUN_ARCH_TAR_TEST=1 + tarball presente)\n'
 fi
+
+# 6b) REGRESSAO do bug real: conf de fabrica (SigLevel estrita, sem
+#     DisableSandbox). O helper tem que normalizar a copia, senao o pacman
+#     rejeita a assinatura e a instalacao falha em silencio.
+R="$TMP/r6b"; CONF_MODE=strict make_rootfs "$R" pacman no
+BIN="$TMP/bin6b"; setup_chroot_stub "$BIN"
+: >"$TMP/args6b"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args6b" AVAILABLE_PKGS="" sh "$HELPER" "$R" 2>&1)"
+rc=$?
+[ "$rc" = "0" ] && ok "conf estrito: rc 0" || bad "conf estrito: rc=$rc ($out)"
+if [ -f "$TMP/args6b.conf" ]; then
+    grep -q 'TrustAll' "$TMP/args6b.conf" \
+        && ok "conf estrito: SigLevel normalizada com TrustAll" \
+        || bad "conf estrito: SigLevel SEM TrustAll (pacman rejeitaria a assinatura)"
+    grep -q '^DisableSandbox' "$TMP/args6b.conf" \
+        && ok "conf estrito: DisableSandbox injetado" \
+        || bad "conf estrito: sem DisableSandbox"
+    grep -q '^LocalFileSigLevel = Optional' "$TMP/args6b.conf" \
+        && ok "conf estrito: LocalFileSigLevel = Optional" \
+        || bad "conf estrito: LocalFileSigLevel nao normalizado"
+    # Nao pode sobrar a linha estrita duplicada.
+    _n="$(grep -c '^SigLevel' "$TMP/args6b.conf")"
+    [ "$_n" = "1" ] && ok "conf estrito: uma unica linha SigLevel" \
+        || bad "conf estrito: $_n linhas SigLevel"
+else
+    bad "conf estrito: conf temporario nao criado"
+fi
+# O conf do container NAO deve ser modificado (so a copia).
+grep -q 'TrustAll' "$R/etc/pacman.conf" \
+    && bad "conf estrito: alterou /etc/pacman.conf do container" \
+    || ok "conf estrito: /etc/pacman.conf do container intacto"
+
+# 6c) keyring ausente: o helper tem que inicializar antes de instalar.
+R="$TMP/r6c"; make_rootfs "$R" pacman no
+BIN="$TMP/bin6c"; setup_chroot_stub "$BIN"
+: >"$TMP/args6c"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args6c" AVAILABLE_PKGS="" sh "$HELPER" "$R" 2>&1)"
+[ "$?" = "0" ] && ok "sem keyring: rc 0" || bad "sem keyring: falhou"
+grep -q 'keyring ausente' "$R/var/log/tuxbox-x11-clients.log" 2>/dev/null \
+    && bad "sem keyring: helper tentou pacman-key sem pacman-key no rootfs" \
+    || ok "sem keyring: sem pacman-key, helper nao se perde"
+
+# 6d) com pacman-key presente, o keyring DEVE ser inicializado.
+R="$TMP/r6d"; make_rootfs "$R" pacman no
+printf '#!/bin/sh\nexit 0\n' >"$R/usr/bin/pacman-key"; chmod 755 "$R/usr/bin/pacman-key"
+BIN="$TMP/bin6d"; setup_chroot_stub "$BIN"
+: >"$TMP/args6d"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args6d" AVAILABLE_PKGS="" sh "$HELPER" "$R" 2>&1)"
+[ "$?" = "0" ] && ok "com pacman-key: rc 0" || bad "com pacman-key: falhou"
+grep -q 'pacman-key --init' "$TMP/args6d" \
+    && ok "com pacman-key: inicializa o keyring" \
+    || bad "com pacman-key: nao inicializou o keyring"
 
 # 7) Modo "full": libs + programas de X11 (WM e clientes de teste).
 R="$TMP/r7"; make_rootfs "$R" pacman no

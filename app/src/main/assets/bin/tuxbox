@@ -483,6 +483,17 @@ if [ "${PHASE2:-}" = "1" ]; then
             "$_bin_dir/ensure-xkb" "$ROOTFS" || \
                 warn "X11: nao foi possivel instalar xkb-data automaticamente (log: $ROOTFS/var/log/tuxbox-xkb.log)"
         fi
+        # v3.45 — o boot do --gui NUNCA passava pelo ensure-pacman (so os botoes
+        # da Home rodavam), entao /etc/pacman.conf continuava com a SigLevel
+        # estrita e a cadeia de confianca ARM nao estava inicializada. O
+        # ensure-x11-clients copiava esse conf e o pacman REJEITAVA a
+        # assinatura dos pacotes -> a instalacao falhava em silencio e era
+        # preciso digitar o pacman -S na mao. Aqui o conf e' normalizado uma
+        # vez; nas abas seguintes o grep ja acha TrustAll e nao ha custo.
+        if [ -n "$_bin_dir" ] && [ -x "$_bin_dir/ensure-pacman" ]; then
+            grep -q 'TrustAll' "$ROOTFS/etc/pacman.conf" 2>/dev/null || \
+                "$_bin_dir/ensure-pacman" "$ROOTFS" >/dev/null 2>&1 || true
+        fi
         # v3.43 — Arch: o plugin X11 do vkmark (e de outros graficos) e'
         # carregado em TEMPO DE EXECUCAO e depende de libxcb/libxcb-icccm, que
         # no Arch sao dependencia OPCIONAL do pacote. Sem elas o app roda no
@@ -492,7 +503,8 @@ if [ "${PHASE2:-}" = "1" ]; then
             _x11c="$("$_bin_dir/ensure-x11-clients" "$ROOTFS" 2>/dev/null | tail -n 1)"
             case "$_x11c" in
                 ok:*|instalado:*) bootinfo "X11: libs de cliente — $_x11c" ;;
-                FALHOU:*) warn "X11: libs de cliente — $_x11c" ;;
+                skip:*) : ;;   # nao-Arch: silencioso, como antes
+                *) warn "X11: libs de cliente — ${_x11c:-sem resposta} (log: $ROOTFS/var/log/tuxbox-x11-clients.log)" ;;
             esac
         fi
         _tx11_ok=0

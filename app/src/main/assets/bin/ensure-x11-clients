@@ -78,23 +78,59 @@ HOST_STAGE="$ROOTFS$STAGE"
 rm -rf "$HOST_STAGE" 2>/dev/null || true
 mkdir -p "$HOST_STAGE/.tuxbox-x11-cache" 2>/dev/null || true
 CONF=""
+
+# Mesma politica do ensure-pacman, aplicada na COPIA do conf:
+#  - DisableSandbox: pacman 7 exige Landlock no download, ausente em Android.
+#  - SigLevel ... TrustAll: a cadeia de confianca das chaves ARM so fica
+#    "marginal" no container; sem TrustAll o pacman REJEITA a assinatura dos
+#    pacotes do repo e a instalacao falha. Este era o bug: o boot do --gui nao
+#    passa pelo ensure-pacman, entao o conf ainda tinha a SigLevel estrita.
+relax_conf() {
+    _c="$1"
+    if grep -q '^\[options\]' "$_c" 2>/dev/null; then
+        grep -q '^[[:space:]]*DisableSandbox' "$_c" 2>/dev/null || \
+            sed -i '/^\[options\]/a DisableSandbox' "$_c" 2>/dev/null || true
+    else
+        printf '\n[options]\nDisableSandbox\n' >>"$_c" 2>/dev/null || true
+    fi
+    if grep -q '^[[:space:]]*SigLevel[[:space:]]*=' "$_c" 2>/dev/null; then
+        sed -i 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Required DatabaseOptional TrustAll/' \
+            "$_c" 2>/dev/null || true
+    else
+        printf 'SigLevel = Required DatabaseOptional TrustAll\n' >>"$_c" 2>/dev/null || true
+    fi
+    if grep -q '^[[:space:]]*LocalFileSigLevel[[:space:]]*=' "$_c" 2>/dev/null; then
+        sed -i 's/^[[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' \
+            "$_c" 2>/dev/null || true
+    else
+        printf 'LocalFileSigLevel = Optional\n' >>"$_c" 2>/dev/null || true
+    fi
+}
+
 if [ -f "$ROOTFS/etc/pacman.conf" ] && [ -d "$HOST_STAGE" ]; then
     cp "$ROOTFS/etc/pacman.conf" "$HOST_STAGE/pacman.conf" 2>/dev/null || true
     if [ -f "$HOST_STAGE/pacman.conf" ]; then
-        if grep -q '^\[options\]' "$HOST_STAGE/pacman.conf" 2>/dev/null; then
-            grep -q '^[[:space:]]*DisableSandbox' "$HOST_STAGE/pacman.conf" 2>/dev/null || \
-                sed -i '/^\[options\]/a DisableSandbox' "$HOST_STAGE/pacman.conf" 2>/dev/null || true
-        else
-            printf '\n[options]\nDisableSandbox\n' >>"$HOST_STAGE/pacman.conf" 2>/dev/null || true
-        fi
+        relax_conf "$HOST_STAGE/pacman.conf"
         CONF="$STAGE/pacman.conf"
     fi
+else
+    log "AVISO: /etc/pacman.conf ausente — usando o conf padrao do container"
 fi
 
 run_pacman() {
     chroot "$ROOTFS" /usr/bin/pacman "$@" \
         --cachedir "$STAGE/.tuxbox-x11-cache" >>"$LOG" 2>&1
 }
+
+# Keyring: o boot do --gui nao passa pelo ensure-pacman, entao o keyring pode
+# nunca ter sido inicializado. Sem GPGDir o pacman aborta antes de baixar.
+if [ ! -d "$ROOTFS/etc/pacman.d/gnupg" ] && [ -x "$ROOTFS/usr/bin/pacman-key" ]; then
+    log "keyring ausente — pacman-key --init"
+    chroot "$ROOTFS" /usr/bin/pacman-key --init >>"$LOG" 2>&1 || true
+    chroot "$ROOTFS" /usr/bin/pacman-key --populate archlinuxarm >>"$LOG" 2>&1 || true
+    chroot "$ROOTFS" /usr/bin/pacman-key --lsign-key \
+        68B3537F39A313B3E574D06777193F152BDBE6A6 >>"$LOG" 2>&1 || true
+fi
 
 rc=1
 if [ -n "$CONF" ]; then
