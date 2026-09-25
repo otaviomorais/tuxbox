@@ -43,6 +43,10 @@ fi
 if [ -x "$ROOTFS/usr/bin/pacman-key" ]; then
     chroot "$ROOTFS" /usr/bin/pacman-key --init >/dev/null 2>&1 || true
     chroot "$ROOTFS" /usr/bin/pacman-key --populate archlinuxarm >/dev/null 2>&1 || true
+    # The official ARM build-system key can be only marginally trusted after
+    # import on older images. Locally sign this documented key fingerprint so
+    # pacman accepts the repository packages.
+    chroot "$ROOTFS" /usr/bin/pacman-key --lsign-key 68B3537F39A313B3E574D06777193F152BDBE6A6 >/dev/null 2>&1 || true
 fi
 
 exit 0

@@ -672,6 +672,7 @@ public class HomeFragment extends Fragment {
                 + " if [ \"$outer_rc\" = \"0\" ] && [ -x \"$D/usr/bin/pacman\" ]; then"
                 + " chroot " + qRoot + " /usr/bin/pacman-key --init >/dev/null 2>&1 || true;"
                 + " chroot " + qRoot + " /usr/bin/pacman-key --populate archlinuxarm >/dev/null 2>&1 || true;"
+                + " chroot " + qRoot + " /usr/bin/pacman-key --lsign-key 68B3537F39A313B3E574D06777193F152BDBE6A6 >/dev/null 2>&1 || true;"
                 + " chroot " + qRoot + " /bin/sh -c " + shellQuote(pacmanCommand) + " 2>&1; pkg_rc=$?;"
                 + " else pkg_rc=127; fi;"
                 + " if [ \"$pkg_rc\" = \"0\" ]; then chroot " + qRoot + " /sbin/ldconfig 2>/dev/null || chroot " + qRoot + " /usr/bin/ldconfig 2>/dev/null || true; fi;"
