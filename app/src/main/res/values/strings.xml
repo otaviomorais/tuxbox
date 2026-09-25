@@ -85,6 +85,7 @@
     <string name="term_cmd">Comando (opcional)</string>
     <string name="term_open">Nova aba</string>
     <string name="term_close">Fechar aba</string>
+    <string name="term_open_menu">Abrir menu de navegação</string>
     <string name="term_status_launch">Iniciando ptyd …</string>
     <string name="term_status_run">Conectado. Digite exit para sair.</string>
     <string name="term_status_err">Erro: %1$s</string>

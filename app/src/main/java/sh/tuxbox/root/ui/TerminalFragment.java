@@ -13,6 +13,7 @@ import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -37,6 +38,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import sh.tuxbox.root.R;
+import sh.tuxbox.root.MainActivity;
 import sh.tuxbox.root.RootShell;
 import sh.tuxbox.root.TerminalService;
 import sh.tuxbox.root.util.AssetInstaller;
@@ -91,6 +93,7 @@ public class TerminalFragment extends Fragment {
     private MaterialCheckBox chkNet;
     private MaterialCheckBox chkGui;
     private MaterialButton btnOpen, btnClose, btnNewTab;
+    private ImageButton btnAppMenu;
     private TextView tvTermStatus, btnToggleOpts;
     private LinearLayout optsPanel, extraKeysRow, tabsRow;
     private HorizontalScrollView tabsScroll;
@@ -121,6 +124,7 @@ public class TerminalFragment extends Fragment {
         btnOpen = view.findViewById(R.id.btnOpen);
         btnClose = view.findViewById(R.id.btnClose);
         btnNewTab = view.findViewById(R.id.btnNewTab);
+        btnAppMenu = view.findViewById(R.id.btnAppMenu);
         tvTermStatus = view.findViewById(R.id.tvTermStatus);
         btnToggleOpts = view.findViewById(R.id.btnToggleOpts);
         optsPanel = view.findViewById(R.id.optsPanel);
@@ -128,6 +132,14 @@ public class TerminalFragment extends Fragment {
         extraKeysRow = view.findViewById(R.id.extraKeysRow);
         tabsRow = view.findViewById(R.id.tabsRow);
         tabsScroll = view.findViewById(R.id.tabsScroll);
+
+        // Menu global compacto: revela temporariamente Início/Baixar/Container/
+        // Terminal/Sobre sem voltar a consumir a altura do Terminal por padrão.
+        btnAppMenu.setOnClickListener(v -> {
+            if (getActivity() instanceof MainActivity) {
+                ((MainActivity) getActivity()).showTerminalNavigation();
+            }
+        });
 
         // Painel de opções recolhível: o terminal ganha espaço e o teclado não
         // esconde o texto. O painel fecha sozinho quando o teclado abre.
