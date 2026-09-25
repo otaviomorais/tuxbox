@@ -658,8 +658,12 @@ public class HomeFragment extends Fragment {
         String qStage = shellQuote(stage);
         String qArchive = shellQuote(archive);
         String pacmanCommand = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; "
-                + "/usr/bin/pacman --cachedir /.tuxbox-mesa-cache --disable-sandbox "
-                + "-U --noconfirm /.tuxbox-mesa-stage/*.pkg.tar.xz";
+                + "if [ -f /.tuxbox-mesa-pacman.conf ]; then "
+                + "/usr/bin/pacman --config /.tuxbox-mesa-pacman.conf "
+                + "--cachedir /.tuxbox-mesa-cache --disable-sandbox "
+                + "-U --noconfirm /.tuxbox-mesa-stage/*.pkg.tar.xz; "
+                + "else /usr/bin/pacman --cachedir /.tuxbox-mesa-cache --disable-sandbox "
+                + "-U --noconfirm /.tuxbox-mesa-stage/*.pkg.tar.xz; fi";
         String command = "D=" + qRoot + "; root_bound=0; proc_owned=0; dev_bound=0;"
                 + " if mount -o bind \"$D\" \"$D\" 2>/dev/null; then root_bound=1; fi;"
                 + " if [ -d \"$D/proc\" ] && mount -t proc -o nosuid,nodev,noexec proc \"$D/proc\" 2>/dev/null; then proc_owned=1; fi;"
@@ -668,7 +672,10 @@ public class HomeFragment extends Fragment {
                 + " if [ -z \"$dns\" ]; then for p in net.dns1 net.dns2 dhcp.wlan0.dns1 dhcp.eth0.dns1; do v=$(getprop \"$p\" 2>/dev/null || true); if [ -n \"$v\" ]; then dns=\"$dns $v\"; fi; done; fi;"
                 + " [ -n \"$dns\" ] || dns='1.1.1.1 8.8.8.8';"
                 + " rm -f \"$D/etc/resolv.conf\"; for n in $dns; do echo \"nameserver $n\"; done > \"$D/etc/resolv.conf\";"
-                + " rm -rf " + qStage + " \"$D/.tuxbox-mesa-cache\"; mkdir -p " + qStage + " \"$D/.tuxbox-mesa-cache\";"
+                + " rm -rf " + qStage + " \"$D/.tuxbox-mesa-cache\" \"$D/.tuxbox-mesa-pacman.conf\"; mkdir -p " + qStage + " \"$D/.tuxbox-mesa-cache\";"
+                + " if [ -f \"$D/etc/pacman.conf\" ]; then cp \"$D/etc/pacman.conf\" \"$D/.tuxbox-mesa-pacman.conf\" 2>/dev/null || true; "
+                + "sed -i 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Optional DatabaseOptional TrustAll/' \"$D/.tuxbox-mesa-pacman.conf\" 2>/dev/null || true; "
+                + "sed -i 's/^[[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' \"$D/.tuxbox-mesa-pacman.conf\" 2>/dev/null || true; fi;"
                 + " tar -xf " + qArchive + " -C " + qStage + " 2>&1; outer_rc=$?; pkg_rc=$outer_rc;"
                 + " if [ \"$outer_rc\" = \"0\" ] && [ -x \"$D/usr/bin/pacman\" ]; then"
                 + " chroot " + qRoot + " /usr/bin/pacman-key --init >/dev/null 2>&1 || true;"
@@ -680,7 +687,7 @@ public class HomeFragment extends Fragment {
                 + " if [ \"$dev_bound\" = \"1\" ]; then umount \"$D/dev\" 2>/dev/null || true; fi;"
                 + " if [ \"$proc_owned\" = \"1\" ]; then umount \"$D/proc\" 2>/dev/null || true; fi;"
                 + " if [ \"$root_bound\" = \"1\" ]; then umount \"$D\" 2>/dev/null || true; fi;"
-                + " rm -rf " + qStage + " \"$D/.tuxbox-mesa-cache\"; rm -f " + qArchive + ";"
+                + " rm -rf " + qStage + " \"$D/.tuxbox-mesa-cache\" \"$D/.tuxbox-mesa-pacman.conf\"; rm -f " + qArchive + ";"
                 + " T=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo $(uname -m)-linux-gnu);"
                 + " echo TURNIP_LIB=$(stat -c %s \"$D/usr/lib/$T/libvulkan_freedreno.so\" 2>/dev/null || stat -c %s \"$D/usr/lib/libvulkan_freedreno.so\" 2>/dev/null || echo 0);"
                 + " echo \"TAR_RC=$pkg_rc\"";
