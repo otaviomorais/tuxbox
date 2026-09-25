@@ -370,7 +370,7 @@ public class HomeFragment extends Fragment {
                                 + " elif [ -x " + shellQuote(rootfs + "/sbin/xbps-install")
                                 + " ]; then echo '@@PKG@@=void'; fi");
                 String[] idc = parseOsRelease(osrel);
-                mesaLog("distro: id=" + (idc[0] == null ? "?" : idc[0])
+                mesaLog("distro: id=" + (idc[0] == null ? "?" : canonicalDistro(idc[0]))
                         + " id_like=" + (idc[1] == null ? "" : idc[1])
                         + " pkg=" + (idc[2] == null ? "" : idc[2]));
                 String[] candidates = distroCandidates(idc);

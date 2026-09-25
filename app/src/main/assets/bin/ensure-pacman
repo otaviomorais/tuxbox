@@ -24,13 +24,13 @@ if ! grep -q '^[[:space:]]*DisableSandbox[[:space:]]*$' "$CONF" 2>/dev/null; the
 fi
 
 # Arch Linux ARM signs packages with archlinuxarm-keyring, while its
-# repository database is intentionally unsigned. Use the upstream ARM
-# setting: require valid package signatures, allow an unsigned database, and
-# allow the local custom Mesa packages (which are not repository packages).
+# repository database is intentionally unsigned. Require a valid package
+# signature, but accept the official ARM build key even when older images
+# have not established its local trust chain (TrustAll).
 if grep -q '^[[:space:]]*SigLevel[[:space:]]*=' "$CONF" 2>/dev/null; then
-    sed -i 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Required DatabaseOptional/' "$CONF" 2>/dev/null || true
+    sed -i 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Required DatabaseOptional TrustAll/' "$CONF" 2>/dev/null || true
 else
-    sed -i '/^\[options\]/a SigLevel = Required DatabaseOptional' "$CONF" 2>/dev/null || true
+    sed -i '/^\[options\]/a SigLevel = Required DatabaseOptional TrustAll' "$CONF" 2>/dev/null || true
 fi
 if grep -q '^[[:space:]]*LocalFileSigLevel[[:space:]]*=' "$CONF" 2>/dev/null; then
     sed -i 's/^[[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' "$CONF" 2>/dev/null || true
