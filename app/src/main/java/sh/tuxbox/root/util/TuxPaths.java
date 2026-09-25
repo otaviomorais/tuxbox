@@ -4,10 +4,18 @@ package sh.tuxbox.root.util;
 public final class TuxPaths {
 
     /**
-     * Real-storage base for container images. /data/local survives reboots and
-     * does not consume RAM. Downloads/imports install directly here.
+     * Real-storage base for installed rootfs images. /data/local survives
+     * reboots and does not consume RAM; the downloaded archives are cached
+     * separately in {@link #ARCHIVES_DIR}.
      */
     public static final String ROOTFS_BASE = "/data/local/tuxbox";
+
+    /**
+     * Persistent archive cache.  It lives outside the app sandbox so a retry
+     * can reuse a completed rootfs even after the temporary download is gone.
+     * The user-visible copy is kept in Download/TuxBox.
+     */
+    public static final String ARCHIVES_DIR = "/data/local/tuxbox-archives";
 
     /**
      * v3.11 — comando único que lista SÓ containers reais: diretórios da base

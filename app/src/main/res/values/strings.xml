@@ -69,7 +69,7 @@
     <string name="dl_done">Pronto! %1$s instalado em /data/local/tuxbox</string>
     <string name="dl_err">Falha: %1$s</string>
     <string name="dl_enter_name">Nome do container (opcional)</string>
-    <string name="dl_keep_alive">Manter arquivo .tar.xz baixado</string>
+    <string name="dl_keep_alive">Os arquivos .tar.xz são salvos em Download/TuxBox e reutilizados automaticamente.</string>
 
     <!-- rootfs list -->
     <string name="rootfs_title">Containers instalados</string>

@@ -30,12 +30,14 @@ import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -52,9 +54,10 @@ import sh.tuxbox.root.util.TuxPaths;
  * Lines:  distro;release;arch;variant;build;/path/to/tarball/
  * Rootfs URL: <indexUrl base> + path + "rootfs.tar.xz"
  *
- * Download runs in Java (real byte progress), extraction is done in Java with
- * commons-compress (no dependency on device tar/curl), then everything is moved
- * into /data/local/tuxbox/<name> as root with cp -a.
+ * Download runs in Java (real byte progress), then the completed archive is
+ * copied to a persistent root cache and extracted directly as root.  This
+ * keeps symlinks (for example bin -> usr/bin) intact and allows a retry to
+ * reuse the archive without downloading it again.
  */
 public class DownloadFragment extends Fragment {
 
@@ -84,15 +87,6 @@ public class DownloadFragment extends Fragment {
     private Uri pendingImportUri;
     private int operationGeneration = 0;
     private int indexGeneration = 0;
-
-    private static final class SymlinkSpec {
-        final String path;
-        final String target;
-        SymlinkSpec(String path, String target) {
-            this.path = path;
-            this.target = target;
-        }
-    }
 
     @Override
     public void onAttach(@NonNull Context context) {
@@ -299,7 +293,9 @@ public class DownloadFragment extends Fragment {
         final Context context = appContext != null ? appContext : requireContext().getApplicationContext();
         String requestedName = editName.getText() == null ? "" : editName.getText().toString().trim();
         if (requestedName.isEmpty()) requestedName = distro + (release.isEmpty() ? "" : "-" + release).toLowerCase(Locale.ROOT);
-        final String fname = requestedName.replaceAll("[^a-zA-Z0-9._-]", "-");
+        final String fname = safeContainerName(requestedName);
+        final String archiveName = archiveName(distro, release);
+        final String stableArchive = stableArchivePath(archiveName);
 
         btnDownload.setEnabled(false);
         btnImport.setEnabled(false);
@@ -308,28 +304,61 @@ public class DownloadFragment extends Fragment {
         progress.setVisibility(View.VISIBLE);
 
         new Thread(() -> {
+            File tmp = null;
+            File legacyArchive = null;
             try {
-                String baseUrl = findImageBase(distro, release);
-                String rootfsUrl = baseUrl + "rootfs.tar.xz";
-                File tmp = new File(context.getCacheDir(), "dl-" + System.currentTimeMillis());
-                tmp.mkdirs();
-                File tar = new File(tmp, "rootfs.tar.xz");
-                File extractDir = new File(tmp, "rootfs");
+                // A completed archive is deliberately checked before contacting
+                // linuxcontainers.org.  This makes retries after a failed
+                // extraction completely offline.
+                boolean cached = archiveIsReady(stableArchive, archiveName);
+                if (cached) {
+                    postToUi(generation, () -> tvProgress.setText(
+                            "Arquivo já salvo; reutilizando Download/TuxBox…"));
+                } else {
+                    // v3.28 left completed archives in dl-* when Java
+                    // extraction failed. Recover a matching one before
+                    // contacting the network.
+                    legacyArchive = findLegacyDownload(context, distro, release);
+                    if (legacyArchive != null) {
+                        postToUi(generation, () -> tvProgress.setText(
+                                "Recuperando o archive baixado anteriormente…"));
+                        promoteArchive(legacyArchive, stableArchive);
+                    } else {
+                        String baseUrl = findImageBase(distro, release);
+                        String rootfsUrl = baseUrl + "rootfs.tar.xz";
+                        tmp = new File(context.getCacheDir(), "dl-" + System.currentTimeMillis());
+                        if (!tmp.mkdirs() && !tmp.isDirectory()) {
+                            throw new IOException("não foi possível criar o cache temporário");
+                        }
+                        File tar = new File(tmp, "rootfs.tar.xz");
 
-                postToUi(generation, () -> tvProgress.setText(getString(R.string.dl_downloading, fname)));
-                download(rootfsUrl, tar, generation);
-                postToUi(generation, () -> tvProgress.setText("Extraindo arquivos…"));
-                List<SymlinkSpec> symlinks = extract(tar, extractDir);
-                postToUi(generation, () -> tvProgress.setText(R.string.dl_moving));
-                moveToMnt(fname, extractDir, symlinks);
+                        postToUi(generation, () -> tvProgress.setText(getString(R.string.dl_downloading, fname)));
+                        download(rootfsUrl, tar, generation);
+                        postToUi(generation, () -> tvProgress.setText("Salvando o arquivo .tar.xz…"));
+                        promoteArchive(tar, stableArchive);
+                    }
+                }
+
+                // Always repair the user-visible copy.  This also handles an
+                // archive that was completed by an older app version.
+                boolean visibleCopy = copyArchiveToDownloads(stableArchive, archiveName);
+                postToUi(generation, () -> tvProgress.setText("Extraindo com root…"));
+                extractArchiveAsRoot(stableArchive, fname);
                 deleteRecursive(tmp);
+                if (legacyArchive != null) deleteRecursive(legacyArchive.getParentFile());
+
+                final String archiveHint = visibleCopy
+                        ? "Download/TuxBox/" + archiveName
+                        : TuxPaths.ARCHIVES_DIR + "/" + archiveName + " (Download indisponível)";
                 postToUi(generation, () -> {
-                    tvProgress.setText(getString(R.string.dl_done, fname));
+                    tvProgress.setText(getString(R.string.dl_done, fname)
+                            + "\nArquivo: " + archiveHint);
                     progress.setVisibility(View.GONE);
                 });
             } catch (Exception e) {
                 postToUi(generation, () -> {
-                    tvProgress.setText(getString(R.string.dl_err, e.getMessage()));
+                    tvProgress.setText(getString(R.string.dl_err, e.getMessage())
+                            + "\nO arquivo baixado foi preservado para uma nova tentativa.");
                     progress.setVisibility(View.GONE);
                 });
             } finally {
@@ -396,120 +425,336 @@ public class DownloadFragment extends Fragment {
                     });
                 }
             }
+            if (total > 0 && done != total) {
+                throw new IOException("download incompleto: " + done + "/" + total + " bytes");
+            }
         } finally {
             conn.disconnect();
         }
     }
 
-    /** Extract tar.xz in Java and return symlinks that must be recreated as root. */
-    private List<SymlinkSpec> extract(File tarXz, File destDir) throws Exception {
-        destDir.mkdirs();
-        List<SymlinkSpec> symlinks = new ArrayList<>();
-        try (TarArchiveInputStream tar = new TarArchiveInputStream(new XZCompressorInputStream(new BufferedInputStream(new FileInputStream(tarXz), 65536)))) {
+    /**
+     * Find a complete archive left by v3.27/v3.28 in the app cache.  The
+     * distro is checked from etc/os-release so an old Debian archive is never
+     * silently installed as Arch (or vice versa).
+     */
+    private File findLegacyDownload(Context context, String distro, String release) {
+        File[] dirs = context.getCacheDir().listFiles(file ->
+                file != null && file.isDirectory() && file.getName().startsWith("dl-"));
+        if (dirs == null || dirs.length == 0) return null;
+        Arrays.sort(dirs, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        int limit = Math.min(dirs.length, 12);
+        for (int i = 0; i < limit; i++) {
+            File archive = new File(dirs[i], "rootfs.tar.xz");
+            if (!archive.isFile() || archive.length() <= 0) continue;
+            try {
+                String osRelease = readOsRelease(archive);
+                if (matchesImage(osRelease, distro, release)) return archive;
+            } catch (Exception ignored) {
+                // Try an older cache entry or download a fresh copy.
+            }
+        }
+        return null;
+    }
+
+    /** Read only etc/os-release; no rootfs paths are created in app storage. */
+    private String readOsRelease(File archive) throws Exception {
+        try (InputStream in = new XZCompressorInputStream(
+                new BufferedInputStream(new FileInputStream(archive), 65536));
+             TarArchiveInputStream tar = new TarArchiveInputStream(in)) {
             TarArchiveEntry entry;
             while ((entry = tar.getNextTarEntry()) != null) {
                 String name = entry.getName();
-                if (name.startsWith("/")) name = name.substring(1);
-                if (name.contains("..")) name = name.replace("..", "_");
-                File outFile = new File(destDir, name);
-                if (entry.isDirectory()) {
-                    outFile.mkdirs();
-                    applyMode(outFile, entry.getMode());
-                } else if (entry.isSymbolicLink()) {
-                    File parent = outFile.getParentFile();
-                    if (parent != null) parent.mkdirs();
-                    symlinks.add(new SymlinkSpec(name, entry.getLinkName()));
-                    // Defer symlink(2) until all regular entries are written.
-                    // This prevents an early /bin -> usr/bin link from making
-                    // a later parent lookup follow a not-yet-created directory.
-                } else {
-                    File parent = outFile.getParentFile();
-                    if (parent != null) parent.mkdirs();
-                    try (OutputStream fos = new BufferedOutputStream(new FileOutputStream(outFile))) {
-                        byte[] buf = new byte[65536];
-                        int n;
-                        while ((n = tar.read(buf)) > 0) fos.write(buf, 0, n);
-                    }
-                    applyMode(outFile, entry.getMode());
+                if (name.startsWith("./")) name = name.substring(2);
+                if (name.equals("etc/os-release")) {
+                    return new String(readAll(tar), StandardCharsets.UTF_8);
                 }
             }
         }
-        // Create links only after extraction; if Android's app sandbox still
-        // rejects symlink(2), moveToMnt repairs them as root in the destination.
-        for (SymlinkSpec link : symlinks) {
-            File linkFile = new File(destDir, link.path);
-            File parent = linkFile.getParentFile();
-            if (parent != null) parent.mkdirs();
-            try {
-                java.nio.file.Files.deleteIfExists(linkFile.toPath());
-            } catch (Exception ignore) { }
-            try {
-                java.nio.file.Files.createSymbolicLink(linkFile.toPath(),
-                        java.nio.file.Paths.get(link.target));
-            } catch (Exception ignore) { }
+        return "";
+    }
+
+    private static boolean matchesImage(String osRelease, String distro, String release) {
+        String id = osReleaseValue(osRelease, "ID").toLowerCase(Locale.ROOT);
+        if (id.isEmpty()) return false;
+        String expected = distro == null ? "" : distro.toLowerCase(Locale.ROOT);
+        if (expected.isEmpty()) return false;
+        if (expected.equals("archlinux")) expected = "arch";
+        else if (expected.equals("amazonlinux")) expected = "amzn";
+        else if (expected.equals("oracle")) expected = "ol";
+        if (!id.equals(expected) && !id.startsWith(expected)) return false;
+
+        String wanted = release == null ? "" : release.toLowerCase(Locale.ROOT);
+        if (wanted.isEmpty() || wanted.equals("current") || wanted.equals("edge")
+                || wanted.equals("rolling") || wanted.equals("latest")
+                || wanted.equals("unstable")) return true;
+        String compactWanted = wanted.replaceAll("[^a-z0-9]", "");
+        if (compactWanted.isEmpty()) return true;
+        String compactOs = osRelease.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+        return compactOs.contains(compactWanted);
+    }
+
+    private static String osReleaseValue(String text, String key) {
+        if (text == null) return "";
+        String prefix = key + "=";
+        for (String line : text.split("\\r?\\n")) {
+            if (line.startsWith(prefix)) {
+                return line.substring(prefix.length()).trim().replaceAll("^['\\\"]|['\\\"]$", "");
+            }
         }
-        return symlinks;
+        return "";
     }
 
     /**
-     * Apply the tar entry mode (owner/group/other rwx) to an extracted file or dir.
-     * Setuid/setgid/sticky are intentionally dropped (the container runs as root).
-     * Always prefers exact POSIX perms so files are never left world-writable
-     * (that is what made /etc/sudo.conf trigger "world writable" in sudo).
+     * Return the persistent name used for a selected linuxcontainers.org image.
+     * The name is deliberately independent of the user-facing container name:
+     * changing the container label must not trigger another large download.
      */
-    private static void applyMode(File f, int mode) {
+    private String archiveName(String distro, String release) {
+        return "tuxbox-" + safePart(distro) + "-" + safePart(release)
+                + "-" + safePart(arch) + ".tar.xz";
+    }
+
+    private static String stableArchivePath(String archiveName) {
+        return TuxPaths.ARCHIVES_DIR + "/" + archiveName;
+    }
+
+    private static String readyPath(String archivePath) {
+        return archivePath + ".ready";
+    }
+
+    private static String safeContainerName(String value) {
+        String safe = value == null ? "" : value.replaceAll("[^a-zA-Z0-9._-]", "-");
+        if (safe.isEmpty() || safe.equals(".") || safe.equals("..")) return "container";
+        return safe;
+    }
+
+    private static String safePart(String value) {
+        String safe = value == null ? "" : value.replaceAll("[^a-zA-Z0-9._-]", "-");
+        return safe.isEmpty() ? "unknown" : safe;
+    }
+
+    /** Match only a complete output line; RootShell also echoes the command. */
+    private static boolean hasMarker(String output, String marker) {
+        if (output == null) return false;
+        for (String line : output.split("\\r?\\n")) {
+            if (line.trim().equals(marker)) return true;
+        }
+        return false;
+    }
+
+    private static String[] downloadDirs() {
+        return new String[]{
+                "/sdcard/Download/TuxBox",
+                "/storage/emulated/0/Download/TuxBox",
+                "/sdcard/Download",
+                "/storage/emulated/0/Download"
+        };
+    }
+
+    /**
+     * Check the root cache and, if necessary, recover an archive previously
+     * copied to Android Downloads.  A .ready marker prevents an interrupted
+     * copy from being mistaken for a complete rootfs.
+     */
+    private boolean archiveIsReady(String stableArchive, String archiveName) {
+        String ready = readyPath(stableArchive);
+        String check = "if [ -s " + shellQuote(stableArchive)
+                + " ] && [ -f " + shellQuote(ready) + " ]; then echo TUXBOX_ARCHIVE_READY; fi";
         try {
-            java.util.Set<java.nio.file.attribute.PosixFilePermission> perms = new java.util.HashSet<>();
-            if ((mode & 0400) != 0) perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_READ);
-            if ((mode & 0200) != 0) perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE);
-            if ((mode & 0100) != 0) perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
-            if ((mode & 0040) != 0) perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_READ);
-            if ((mode & 0020) != 0) perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_WRITE);
-            if ((mode & 0010) != 0) perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
-            if ((mode & 0004) != 0) perms.add(java.nio.file.attribute.PosixFilePermission.OTHERS_READ);
-            if ((mode & 0002) != 0) perms.add(java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE);
-            if ((mode & 0001) != 0) perms.add(java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE);
-            java.nio.file.Files.setPosixFilePermissions(f.toPath(), perms);
-        } catch (Exception e1) {
-            // Fallback for filesystems without POSIX perms: never add write for
-            // group/other, only for the owner.
-            try {
-                f.setReadable(true, false);
-                f.setWritable((mode & 0200) != 0, true);
-                f.setExecutable((mode & 0100) != 0, false);
-            } catch (Exception ignored) { }
+            if (hasMarker(RootShell.run(check), "TUXBOX_ARCHIVE_READY")) return true;
+            // A process can be killed after the atomic mv and before the
+            // marker.  The stable filename is only created after a complete
+            // cp, so recover that state instead of downloading again.
+            String recover = "if [ -s " + shellQuote(stableArchive)
+                    + " ] && [ ! -e " + shellQuote(ready) + " ]; then touch "
+                    + shellQuote(ready) + " && echo TUXBOX_ARCHIVE_READY; fi";
+            if (hasMarker(RootShell.run(recover), "TUXBOX_ARCHIVE_READY")) return true;
+            for (String dir : downloadDirs()) {
+                String candidate = dir + "/" + archiveName;
+                String restore = "if [ -s " + shellQuote(candidate) + " ]; then "
+                        + "if mkdir -p " + shellQuote(TuxPaths.ARCHIVES_DIR)
+                        + " && rm -f " + shellQuote(stableArchive + ".part")
+                        + " && cp -f " + shellQuote(candidate) + " "
+                        + shellQuote(stableArchive + ".part")
+                        + " && mv -f " + shellQuote(stableArchive + ".part") + " "
+                        + shellQuote(stableArchive) + "; then "
+                        + "chmod 0644 " + shellQuote(stableArchive) + " 2>/dev/null || true; "
+                        + "touch " + shellQuote(ready)
+                        + " && echo TUXBOX_ARCHIVE_READY; fi; fi";
+                if (hasMarker(RootShell.run(restore), "TUXBOX_ARCHIVE_READY")) return true;
+            }
+        } catch (Exception ignored) {
+            // A missing root shell is reported by the subsequent operation.
+        }
+        return false;
+    }
+
+    /** Copy a completed download to the root-owned persistent cache atomically. */
+    private void promoteArchive(File source, String stableArchive) throws Exception {
+        if (source == null || !source.isFile() || source.length() <= 0) {
+            throw new IOException("arquivo .tar.xz vazio ou incompleto");
+        }
+        String part = stableArchive + ".part";
+        String ready = readyPath(stableArchive);
+        String command = "if mkdir -p " + shellQuote(TuxPaths.ARCHIVES_DIR)
+                + " && rm -f " + shellQuote(ready) + " " + shellQuote(part)
+                + " && cp -f " + shellQuote(source.getAbsolutePath()) + " " + shellQuote(part)
+                + " && mv -f " + shellQuote(part) + " " + shellQuote(stableArchive)
+                + "; then chmod 0644 " + shellQuote(stableArchive) + " 2>/dev/null || true; "
+                + "restorecon " + shellQuote(stableArchive) + " " + shellQuote(ready)
+                + " 2>/dev/null || true; "
+                + "touch " + shellQuote(ready) + " && echo TUXBOX_ARCHIVE_SAVED; fi";
+        String result = RootShell.run(command);
+        if (!hasMarker(result, "TUXBOX_ARCHIVE_SAVED")) {
+            throw new IOException("não foi possível salvar o arquivo .tar.xz: " + result);
         }
     }
 
-    /** Move extracted rootfs into /data/local/tuxbox/<name> as root, preserving attributes (cp -a).
-     *  Afterwards enforce exec/traverse bits and fix SELinux labels: files that come from
-     *  the app's sandbox can arrive without +x or with app_data_file labels that block
-     *  exec by the su domain (symptom: "chroot: can't execute Permission denied"). */
-    private void moveToMnt(String name, File extractDir, List<SymlinkSpec> symlinks) throws Exception {
-        String src = extractDir.getAbsolutePath();
-        String dst = TuxPaths.ROOTFS_BASE + "/" + name;
-        StringBuilder repair = new StringBuilder();
-        for (SymlinkSpec link : symlinks) {
-            String targetPath = dst + "/" + link.path;
-            String parent = new File(targetPath).getParent();
-            repair.append("mkdir -p ").append(shellQuote(parent)).append("; ");
-            repair.append("rm -rf ").append(shellQuote(targetPath)).append("; ");
-            repair.append("ln -s ").append(shellQuote(link.target)).append(" ")
-                    .append(shellQuote(targetPath)).append(" 2>/dev/null || true; ");
+    /**
+     * Keep a user-visible copy in Android Downloads.  The root copy is used
+     * for installation, so scoped-storage restrictions do not affect retries.
+     */
+    private boolean copyArchiveToDownloads(String stableArchive, String archiveName) {
+        for (String dir : downloadDirs()) {
+            String destination = dir + "/" + archiveName;
+            String part = destination + ".part";
+            String command = "if [ -d /sdcard ] || [ -d /storage/emulated/0 ]; then "
+                    + "if mkdir -p " + shellQuote(dir)
+                    + " && cp -f " + shellQuote(stableArchive) + " " + shellQuote(part)
+                    + " && mv -f " + shellQuote(part) + " " + shellQuote(destination) + "; then "
+                    + "chmod 0644 " + shellQuote(destination) + " 2>/dev/null || true; "
+                    + "chown 0:0 " + shellQuote(destination) + " 2>/dev/null || true; "
+                    + "restorecon " + shellQuote(destination) + " 2>/dev/null || true; "
+                    + "echo TUXBOX_DOWNLOADS_SAVED; fi; fi";
+            try {
+                if (hasMarker(RootShell.run(command), "TUXBOX_DOWNLOADS_SAVED")) return true;
+            } catch (Exception ignored) { }
         }
-        String result = RootShell.run("rm -rf " + shellQuote(dst)
-                + "; mkdir -p " + shellQuote(TuxPaths.ROOTFS_BASE)
-                + "; cp -a " + shellQuote(src + "/.") + " " + shellQuote(dst) + " 2>&1; "
-                + repair
-                + "chown -R 0:0 " + shellQuote(dst)
-                + "; chmod -R u+rwX,go+rX,go-w " + shellQuote(dst) + " 2>&1; "
-                + "restorecon -RF " + shellQuote(dst) + " 2>&1 || true; "
-                + "grep -qs '^_apt:' " + shellQuote(dst + "/etc/passwd") + " && chown -R _apt:root "
-                + shellQuote(dst + "/var/lib/apt/lists") + " 2>/dev/null || true; "
-                + "echo DST=$(ls -d " + shellQuote(dst) + " 2>&1)");
-        if (!result.contains("DST=" + dst)) {
-            throw new IllegalStateException("falha ao mover para " + TuxPaths.ROOTFS_BASE + ": " + result);
+        return false;
+    }
+
+    /**
+     * Extract directly as root.  This is intentionally not done in the app
+     * sandbox: Android's private filesystem can reject or mishandle symlink
+     * parents such as /bin -> usr/bin, while the root-side tar implementation
+     * preserves the archive exactly.
+     *
+     * If the device tar has no xz support, Java decompresses only the XZ stream
+     * to a temporary uncompressed tar and root extracts that.  No Java
+     * filesystem extraction is involved, so the original symlink ordering is
+     * still handled by tar.
+     */
+    private void extractArchiveAsRoot(String archive, String name) throws Exception {
+        IOException directFailure = tryExtractArchiveAsRoot(archive, name, true);
+        if (directFailure == null) return;
+
+        File localDir = null;
+        try {
+            File localArchive = copyArchiveToAppCache(archive);
+            localDir = localArchive.getParentFile();
+            File plainTar = decompressXzToTar(localArchive);
+            IOException plainFailure = tryExtractArchiveAsRoot(plainTar.getAbsolutePath(), name, false);
+            if (plainFailure == null) return;
+            directFailure.addSuppressed(plainFailure);
+        } catch (Exception fallbackFailure) {
+            directFailure.addSuppressed(fallbackFailure);
+        } finally {
+            deleteRecursive(localDir);
         }
+        throw new IOException("não foi possível extrair o container com root; "
+                + "tentativa XZ e tar semcompressado falharam", directFailure);
+    }
+
+    /** @return null on success, otherwise a diagnostic exception. */
+    private IOException tryExtractArchiveAsRoot(String archive, String name, boolean compressed) {
+        String destination = TuxPaths.ROOTFS_BASE + "/" + name;
+        String[] extractors = compressed
+                ? new String[]{
+                "tar -xf",
+                "/system/bin/tar -xf",
+                "toybox tar -xf",
+                "/system/bin/toybox tar -xf",
+                "busybox tar -xf",
+                "/system/bin/busybox tar -xf",
+                "tar -xJf",
+                "/system/bin/tar -xJf",
+                "toybox tar -xJf",
+                "/system/bin/toybox tar -xJf",
+                "busybox tar -xJf",
+                "/system/bin/busybox tar -xJf"
+        }
+                : new String[]{
+                "tar -xf",
+                "/system/bin/tar -xf",
+                "toybox tar -xf",
+                "/system/bin/toybox tar -xf",
+                "busybox tar -xf",
+                "/system/bin/busybox tar -xf"
+        };
+        StringBuilder failures = new StringBuilder();
+        String lastResult = "";
+        for (String extractor : extractors) {
+            String command = "rm -rf " + shellQuote(destination)
+                    + " && mkdir -p " + shellQuote(destination) + " && "
+                    + extractor + " " + shellQuote(archive) + " -C "
+                    + shellQuote(destination) + " >/dev/null 2>&1; rc=$?; "
+                    + "if [ $rc -eq 0 ] && [ -e " + shellQuote(destination + "/etc")
+                    + " ] && [ -e " + shellQuote(destination + "/usr")
+                    + " ] && [ -e " + shellQuote(destination + "/bin/sh") + " ]; then "
+                    + "chown -R 0:0 " + shellQuote(destination) + " 2>/dev/null || true; "
+                    + "chmod -R u+rwX,go+rX,go-w " + shellQuote(destination)
+                    + " 2>/dev/null || true; "
+                    + "if grep -qs '^_apt:' " + shellQuote(destination + "/etc/passwd")
+                    + "; then chown -R _apt:root " + shellQuote(destination + "/var/lib/apt/lists")
+                    + " 2>/dev/null || true; fi; "
+                    + "restorecon -RF " + shellQuote(destination) + " 2>/dev/null || true; "
+                    + "echo TUXBOX_EXTRACT_OK; else rm -rf " + shellQuote(destination)
+                    + "; echo TUXBOX_EXTRACT_FAIL; fi";
+            String result = RootShell.run(command);
+            if (hasMarker(result, "TUXBOX_EXTRACT_OK")) return null;
+            lastResult = result;
+            failures.append(extractor).append(":falha; ");
+        }
+        String detail = lastResult.length() > 600 ? lastResult.substring(0, 600) : lastResult;
+        return new IOException("tar=" + failures + "\n" + detail);
+    }
+
+    /** Copy a root-owned archive back to a temporary app-readable file. */
+    private File copyArchiveToAppCache(String stableArchive) throws Exception {
+        File dir = new File(appContext.getCacheDir(), "rootfs-src-" + System.currentTimeMillis());
+        if (!dir.mkdirs() && !dir.isDirectory()) {
+            throw new IOException("não foi possível criar o cache de extração");
+        }
+        File local = new File(dir, "rootfs.tar.xz");
+        String result = RootShell.run(
+                "if cp -f " + shellQuote(stableArchive) + " " + shellQuote(local.getAbsolutePath())
+                        + " && chmod 0644 " + shellQuote(local.getAbsolutePath())
+                        + "; then restorecon " + shellQuote(local.getAbsolutePath())
+                        + " 2>/dev/null || true; echo TUXBOX_ARCHIVE_LOCAL; fi");
+        if (!hasMarker(result, "TUXBOX_ARCHIVE_LOCAL")) {
+            deleteRecursive(dir);
+            throw new IOException("não foi possível copiar o archive para o cache: " + result);
+        }
+        return local;
+    }
+
+    /** Decompress XZ to a plain tar without creating any rootfs paths. */
+    private File decompressXzToTar(File source) throws Exception {
+        File output = new File(source.getParentFile(), "rootfs.tar");
+        try (InputStream in = new XZCompressorInputStream(
+                new BufferedInputStream(new java.io.FileInputStream(source), 65536));
+             OutputStream out = new BufferedOutputStream(new FileOutputStream(output))) {
+            byte[] buffer = new byte[65536];
+            int count;
+            long total = 0;
+            while ((count = in.read(buffer)) > 0) {
+                out.write(buffer, 0, count);
+                total += count;
+            }
+            if (total <= 0) throw new IOException("archive XZ vazio");
+        }
+        return output;
     }
 
     private static String shellQuote(String value) {
@@ -533,38 +778,56 @@ public class DownloadFragment extends Fragment {
         final Context context = appContext != null ? appContext : requireContext().getApplicationContext();
         String requestedName = editName.getText() == null ? "" : editName.getText().toString().trim();
         if (requestedName.isEmpty()) requestedName = "importado";
-        final String fname2 = requestedName.replaceAll("[^a-zA-Z0-9._-]", "-");
+        final String fname2 = safeContainerName(requestedName);
         btnDownload.setEnabled(false);
         btnImport.setEnabled(false);
         progress.setIndeterminate(true);
         progress.setVisibility(View.VISIBLE);
         tvProgress.setText("Importando arquivo…");
         new Thread(() -> {
+            File tmp = null;
             try {
-                File tmp = new File(context.getCacheDir(), "imp-" + System.currentTimeMillis());
-                tmp.mkdirs();
+                tmp = new File(context.getCacheDir(), "imp-" + System.currentTimeMillis());
+                if (!tmp.mkdirs() && !tmp.isDirectory()) {
+                    throw new IOException("não foi possível criar o cache temporário");
+                }
                 File tar = new File(tmp, "rootfs.tar.xz");
-                File extractDir = new File(tmp, "rootfs");
+                java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
 
                 try (InputStream in = context.getContentResolver().openInputStream(uri);
                      OutputStream out = new BufferedOutputStream(new FileOutputStream(tar))) {
                     if (in == null) throw new IllegalStateException("não foi possível abrir o arquivo");
                     byte[] buf = new byte[65536];
                     int n;
-                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    while ((n = in.read(buf)) > 0) {
+                        out.write(buf, 0, n);
+                        digest.update(buf, 0, n);
+                    }
                 }
 
-                postToUi(generation, () -> tvProgress.setText("Extraindo arquivos…"));
-                List<SymlinkSpec> symlinks = extract(tar, extractDir);
-                moveToMnt(fname2, extractDir, symlinks);
+                final String archiveName = "tuxbox-import-" + hexDigest(digest.digest()) + ".tar.xz";
+                final String stableArchive = stableArchivePath(archiveName);
+                postToUi(generation, () -> tvProgress.setText("Salvando o arquivo .tar.xz…"));
+                if (!archiveIsReady(stableArchive, archiveName)) {
+                    promoteArchive(tar, stableArchive);
+                }
+                boolean visibleCopy = copyArchiveToDownloads(stableArchive, archiveName);
+                postToUi(generation, () -> tvProgress.setText("Extraindo com root…"));
+                extractArchiveAsRoot(stableArchive, fname2);
                 deleteRecursive(tmp);
+
+                final String archiveHint = visibleCopy
+                        ? "Download/TuxBox/" + archiveName
+                        : TuxPaths.ARCHIVES_DIR + "/" + archiveName + " (Download indisponível)";
                 postToUi(generation, () -> {
-                    tvProgress.setText(getString(R.string.dl_done, fname2));
+                    tvProgress.setText(getString(R.string.dl_done, fname2)
+                            + "\nArquivo: " + archiveHint);
                     progress.setVisibility(View.GONE);
                 });
             } catch (Exception e) {
                 postToUi(generation, () -> {
-                    tvProgress.setText(getString(R.string.dl_err, e.getMessage()));
+                    tvProgress.setText(getString(R.string.dl_err, e.getMessage())
+                            + "\nO arquivo importado foi preservado para uma nova tentativa.");
                     progress.setVisibility(View.GONE);
                 });
             } finally {
@@ -595,6 +858,12 @@ public class DownloadFragment extends Fragment {
     }
 
     // ---- helpers ----
+
+    private static String hexDigest(byte[] bytes) {
+        StringBuilder out = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) out.append(String.format(Locale.ROOT, "%02x", b & 0xff));
+        return out.toString();
+    }
 
     private static byte[] readAll(InputStream in) throws Exception {
         java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();

@@ -109,6 +109,14 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
                 android:text="@string/dl_progress" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/dl_keep_alive"
+                android:textColor="@color/tux_text_secondary"
+                android:textSize="12sp" />
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 </LinearLayout>
