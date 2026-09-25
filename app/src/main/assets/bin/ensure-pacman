@@ -1,9 +1,9 @@
 #!/system/bin/sh
-# Make Arch pacman usable on Android kernels without Landlock.
-# Pacman 7 downloads packages in a sandbox by default.  The Android kernel
-# used by TuxBox does not expose Landlock, so the transaction fails before
-# files are committed.  This only changes the download sandbox; package
-# signature verification and normal root privileges remain enabled.
+# Prepare Arch pacman for an Android/TuxBox container.
+#
+# Android kernels generally do not expose Landlock, which pacman 7 requires
+# for its download sandbox.  Arch Linux ARM also uses its own package keyring;
+# initialize/populate it so current repository packages verify correctly.
 # Usage: ensure-pacman <rootfs>
 
 ROOTFS="${1:-}"
@@ -14,17 +14,35 @@ ROOTFS="${1:-}"
 CONF="$ROOTFS/etc/pacman.conf"
 [ -f "$CONF" ] || exit 0
 
-# Already explicitly disabled?  Do not touch the user's configuration.
-if grep -q '^[[:space:]]*DisableSandbox[[:space:]]*$' "$CONF" 2>/dev/null; then
-    exit 0
+# Disable only the download sandbox. Package signature checks remain enabled.
+if ! grep -q '^[[:space:]]*DisableSandbox[[:space:]]*$' "$CONF" 2>/dev/null; then
+    if grep -q '^[[:space:]]*#[[:space:]]*DisableSandbox[[:space:]]*$' "$CONF" 2>/dev/null; then
+        sed -i 's/^[[:space:]]*#[[:space:]]*DisableSandbox[[:space:]]*$/DisableSandbox/' "$CONF" 2>/dev/null || true
+    elif grep -q '^\[options\]' "$CONF" 2>/dev/null; then
+        sed -i '/^\[options\]/a DisableSandbox' "$CONF" 2>/dev/null || true
+    fi
 fi
 
-# Arch's default file contains "#DisableSandbox".  Prefer simply uncommenting
-# that directive; otherwise add it immediately below [options].
-if grep -q '^[[:space:]]*#[[:space:]]*DisableSandbox[[:space:]]*$' "$CONF" 2>/dev/null; then
-    sed -i 's/^[[:space:]]*#[[:space:]]*DisableSandbox[[:space:]]*$/DisableSandbox/' "$CONF" 2>/dev/null || true
-elif grep -q '^\[options\]' "$CONF" 2>/dev/null; then
-    sed -i '/^\[options\]/a DisableSandbox' "$CONF" 2>/dev/null || true
+# Arch Linux ARM signs packages with archlinuxarm-keyring, while its
+# repository database is intentionally unsigned. Use the upstream ARM
+# setting: require valid package signatures, allow an unsigned database, and
+# allow the local custom Mesa packages (which are not repository packages).
+if grep -q '^[[:space:]]*SigLevel[[:space:]]*=' "$CONF" 2>/dev/null; then
+    sed -i 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Required DatabaseOptional/' "$CONF" 2>/dev/null || true
+else
+    sed -i '/^\[options\]/a SigLevel = Required DatabaseOptional' "$CONF" 2>/dev/null || true
+fi
+if grep -q '^[[:space:]]*LocalFileSigLevel[[:space:]]*=' "$CONF" 2>/dev/null; then
+    sed -i 's/^[[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' "$CONF" 2>/dev/null || true
+else
+    sed -i '/^\[options\]/a LocalFileSigLevel = Optional' "$CONF" 2>/dev/null || true
+fi
+
+# Populate the keyring when the image contains the ARM keyring package. This
+# is safe to repeat and does not alter the package database.
+if [ -x "$ROOTFS/usr/bin/pacman-key" ]; then
+    chroot "$ROOTFS" /usr/bin/pacman-key --init >/dev/null 2>&1 || true
+    chroot "$ROOTFS" /usr/bin/pacman-key --populate archlinuxarm >/dev/null 2>&1 || true
 fi
 
 exit 0

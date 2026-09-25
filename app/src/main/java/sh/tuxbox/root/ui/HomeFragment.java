@@ -670,6 +670,8 @@ public class HomeFragment extends Fragment {
                 + " rm -rf " + qStage + " \"$D/.tuxbox-mesa-cache\"; mkdir -p " + qStage + " \"$D/.tuxbox-mesa-cache\";"
                 + " tar -xf " + qArchive + " -C " + qStage + " 2>&1; outer_rc=$?; pkg_rc=$outer_rc;"
                 + " if [ \"$outer_rc\" = \"0\" ] && [ -x \"$D/usr/bin/pacman\" ]; then"
+                + " chroot " + qRoot + " /usr/bin/pacman-key --init >/dev/null 2>&1 || true;"
+                + " chroot " + qRoot + " /usr/bin/pacman-key --populate archlinuxarm >/dev/null 2>&1 || true;"
                 + " chroot " + qRoot + " /bin/sh -c " + shellQuote(pacmanCommand) + " 2>&1; pkg_rc=$?;"
                 + " else pkg_rc=127; fi;"
                 + " if [ \"$pkg_rc\" = \"0\" ]; then chroot " + qRoot + " /sbin/ldconfig 2>/dev/null || chroot " + qRoot + " /usr/bin/ldconfig 2>/dev/null || true; fi;"
