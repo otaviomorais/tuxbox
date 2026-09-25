@@ -60,6 +60,7 @@ public final class AssetInstaller {
             installAtomically(ctx, "bin/getroot", new File(binDir, "getroot"));
             installAtomically(ctx, "bin/ensure-xkb", new File(binDir, "ensure-xkb"));
             installAtomically(ctx, "bin/ensure-pacman", new File(binDir, "ensure-pacman"));
+            installAtomically(ctx, "bin/ensure-x11-clients", new File(binDir, "ensure-x11-clients"));
             installAtomically(ctx, "ptyd/" + abi + "/ptyd", ptydPath(ctx));
         }
     }

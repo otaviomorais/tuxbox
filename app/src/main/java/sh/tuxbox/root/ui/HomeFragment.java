@@ -353,6 +353,13 @@ public class HomeFragment extends Fragment {
                     if (new File(pacmanHelper).isFile()) {
                         RootShell.run(shellQuote(pacmanHelper) + " " + shellQuote(rootfs) + " 2>/dev/null || true");
                     }
+                    // Arch only: X11 client libs (vkmark/glxgears plugins are
+                    // dlopen()ed at runtime and xcb-util-wm is an optional dep
+                    // there). No-op on every other distro.
+                    String x11Helper = AssetInstaller.binDir(appCtx).getAbsolutePath() + "/ensure-x11-clients";
+                    if (new File(x11Helper).isFile()) {
+                        RootShell.run(shellQuote(x11Helper) + " " + shellQuote(rootfs) + " 2>/dev/null || true");
+                    }
                 } catch (Exception ignored) { }
                 String osrel = RootShell.run(
                         "echo '@@OSBEGIN@@'; cat " + shellQuote(rootfs + "/etc/os-release")

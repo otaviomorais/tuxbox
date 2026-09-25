@@ -483,6 +483,18 @@ if [ "${PHASE2:-}" = "1" ]; then
             "$_bin_dir/ensure-xkb" "$ROOTFS" || \
                 warn "X11: nao foi possivel instalar xkb-data automaticamente (log: $ROOTFS/var/log/tuxbox-xkb.log)"
         fi
+        # v3.43 — Arch: o plugin X11 do vkmark (e de outros graficos) e'
+        # carregado em TEMPO DE EXECUCAO e depende de libxcb/libxcb-icccm, que
+        # no Arch sao dependencia OPCIONAL do pacote. Sem elas o app roda no
+        # Vulkan da GPU mas nao cria janela nenhuma no X11. O helper e' no-op
+        # em qualquer distro que nao seja Arch (sem pacman no rootfs).
+        if [ -n "$_bin_dir" ] && [ -x "$_bin_dir/ensure-x11-clients" ]; then
+            _x11c="$("$_bin_dir/ensure-x11-clients" "$ROOTFS" 2>/dev/null | tail -n 1)"
+            case "$_x11c" in
+                ok:*|instalado:*) bootinfo "X11: libs de cliente — $_x11c" ;;
+                FALHOU:*) warn "X11: libs de cliente — $_x11c" ;;
+            esac
+        fi
         _tx11_ok=0
         _tx11_apk=$(/system/bin/pm path com.termux.x11 2>/dev/null | cut -d: -f2 | head -1 || true)
         if [ -n "$_tx11_apk" ]; then
@@ -1012,6 +1024,24 @@ EOF
         bootinfo "GPU: /dev/dri ligado -> DRM nativo${GPU_ENV:+ (override: ${GPU_ENV%% *})}"
     else
         bootinfo "GPU: sem GPU nativa -> llvmpipe (software)"
+    fi
+
+    # v3.43 — AUTO-TESTE pos-pivot do X11. Antes nao havia nenhuma verificacao
+    # DEPOIS do pivot_root: se o socket sumisse (tmpfs do /tmp recriado, symlink
+    # apontando para caminho inexistente) ou se faltassem as libs de cliente,
+    # a sessao continuava com DISPLAY=:0 e o grafico rodava "invisivel" — era
+    # exatamente o sintoma "a GPU funciona mas nada aparece no X11".
+    if [ "${GUI:-0}" = "1" ] && [ "${_X11_LINK:-0}" = "1" ]; then
+        if [ -S /tmp/.X11-unix/X0 ]; then
+            bootinfo "X11: pos-pivot OK — /tmp/.X11-unix/X0 e' socket; DISPLAY=:0"
+        else
+            bootinfo "X11: pos-pivot FALHOU — /tmp/.X11-unix/X0 ausente (alvo=${_SOCK:-?})"
+        fi
+        _xcb=0
+        for _xcb_p in /usr/lib/libxcb.so.* /usr/lib/libxcb-icccm.so.*; do
+            [ -e "$_xcb_p" ] && _xcb=1
+        done
+        bootinfo "X11: libs de cliente xcb=$_xcb (vkmark/glxgears so' abrem janela com elas)"
     fi
 
     # On Termux with tsu, chroot immediately after pivot_root is required

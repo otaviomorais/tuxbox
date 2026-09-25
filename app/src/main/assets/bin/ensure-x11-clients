@@ -1,0 +1,112 @@
+#!/system/bin/sh
+# ensure-x11-clients — Arch-only: garante as libs de CLIENTE X11 que os
+# graficos abrem em tempo de execucao para conseguir criar janela no $DISPLAY.
+#
+# POR QUE SO ARCH:
+# O vkmark upstream monta o backend X11 como PLUGIN CARREGAVEL, nao linkado no
+# binario (src/meson.build):
+#     if build_xcb_ws
+#         xcb_ws = shared_module('xcb', ... dependencies: [vulkan_dep, xcb_dep, xcb_icccm_dep] ...)
+#     endif
+# No Arch o pacote xcb-util-wm e' dependencia OPCIONAL ("for X11 support"), ou
+# seja, `pacman -S vkmark` instala o plugin mas NAO as libs que ele dlopen().
+# Resultado: o Vulkan roda na GPU (surface headless) e nada aparece no X11 — o
+# benchmark funciona "por fora" e a tela fica vazia. No Debian a pilha X11 entra
+# como dependencia dura, por isso o mesmo comando abre janela la e nao aqui.
+#
+# Nao mexe em nenhuma outra distro: sem pacman no rootfs e' no-op.
+# Uso: ensure-x11-clients <rootfs>
+
+ROOTFS="${1:-}"
+[ -n "$ROOTFS" ] || exit 2
+[ -d "$ROOTFS" ] || exit 2
+
+# Arch apenas. Qualquer outra distro (Debian/Ubuntu/Alpine/Fedora...) sai intacta.
+[ -x "$ROOTFS/usr/bin/pacman" ] || { echo "skip: nao-arch"; exit 0; }
+
+LOG="$ROOTFS/var/log/tuxbox-x11-clients.log"
+mkdir -p "$ROOTFS/var/log" 2>/dev/null || true
+log() { printf '[x11-clients] %s\n' "$*" >>"$LOG" 2>/dev/null || true; }
+
+# O plugin xcb do vkmark dlopen()a libxcb-icccm e a libxcb; sem elas ele cai
+# no plugin headless. Procura em lib/, usr/lib/ e nos dirs multiarch.
+lib_present() {
+    _base="$1"
+    for _p in \
+        "$ROOTFS/usr/lib/$_base".* \
+        "$ROOTFS/lib/$_base".* \
+        "$ROOTFS/usr/lib/aarch64-linux-gnu/$_base".* \
+        "$ROOTFS/usr/lib/arm-linux-gnueabihf/$_base".* \
+        "$ROOTFS/usr/lib/musl/$_base".*
+    do
+        [ -e "$_p" ] && return 0
+    done
+    return 1
+}
+
+MISSING=""
+lib_present libxcb-icccm.so || MISSING="$MISSING xcb-util-wm"
+lib_present libxcb.so || MISSING="$MISSING libxcb"
+
+if [ -z "$MISSING" ]; then
+    log "ok: libxcb + libxcb-icccm presentes (plugin xcb do vkmark carrega)"
+    echo "ok: libs de cliente X11 ja presentes"
+    exit 0
+fi
+
+log "faltando:$MISSING — instalando via pacman"
+missing_in_fs() {
+    lib_present libxcb-icccm.so || lib_present libxcb.so
+}
+
+# pacman 7 exige Landlock no download sandbox, ausente na maioria dos kernels
+# Android. ensure-pacman ja grava DisableSandbox em /etc/pacman.conf; aqui
+# repetimos numa copia porque a sessao GUI pode ter rodado antes dele.
+STAGE="/.tuxbox-x11-pacman"
+HOST_STAGE="$ROOTFS$STAGE"
+rm -rf "$HOST_STAGE" 2>/dev/null || true
+mkdir -p "$HOST_STAGE/.tuxbox-x11-cache" 2>/dev/null || true
+CONF=""
+if [ -f "$ROOTFS/etc/pacman.conf" ] && [ -d "$HOST_STAGE" ]; then
+    cp "$ROOTFS/etc/pacman.conf" "$HOST_STAGE/pacman.conf" 2>/dev/null || true
+    if [ -f "$HOST_STAGE/pacman.conf" ]; then
+        if grep -q '^\[options\]' "$HOST_STAGE/pacman.conf" 2>/dev/null; then
+            grep -q '^[[:space:]]*DisableSandbox' "$HOST_STAGE/pacman.conf" 2>/dev/null || \
+                sed -i '/^\[options\]/a DisableSandbox' "$HOST_STAGE/pacman.conf" 2>/dev/null || true
+        else
+            printf '\n[options]\nDisableSandbox\n' >>"$HOST_STAGE/pacman.conf" 2>/dev/null || true
+        fi
+        CONF="$STAGE/pacman.conf"
+    fi
+fi
+
+run_pacman() {
+    chroot "$ROOTFS" /usr/bin/pacman "$@" \
+        --cachedir "$STAGE/.tuxbox-x11-cache" >>"$LOG" 2>&1
+}
+
+rc=1
+if [ -n "$CONF" ]; then
+    run_pacman --config "$CONF" --disable-sandbox -S --needed --noconfirm \
+        xcb-util-wm libxcb && rc=0
+fi
+if [ "$rc" != "0" ]; then
+    # A copia de conf pode ter falhado: tenta o caminho simples (o /etc/pacman.conf ja
+    # tratado por ensure-pacman cobre o sandbox).
+    run_pacman --disable-sandbox -S --needed --noconfirm xcb-util-wm libxcb && rc=0
+fi
+if [ "$rc" != "0" ] && missing_in_fs; then
+    run_pacman -S --needed --noconfirm xcb-util-wm libxcb && rc=0
+fi
+
+rm -rf "$HOST_STAGE" 2>/dev/null || true
+
+if [ "$rc" = "0" ] || ! missing_in_fs; then
+    log "ok: instalado ($MISSING) — plugin xcb do vkmark deve carregar"
+    echo "instalado: libs de cliente X11 ($MISSING)"
+    exit 0
+fi
+
+log "FALHOU: $MISSING nao instalados (rc=$rc)"
+echo "FALHOU: rode no Arch -> pacman -S --needed --noconfirm xcb-util-wm libxcb"
+exit 1
