@@ -1,73 +1,183 @@
 package sh.tuxbox.root;
 
-import android.Manifest;
-import android.content.pm.PackageManager;
-import android.os.Build;
+import android.content.Context;
 import android.os.Bundle;
-import android.view.MenuItem;
+import android.view.View;
+import android.view.inputmethod.InputMethodManager;
 
+import java.util.ArrayList;
+import java.util.List;
+
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
 import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentManager;
+import androidx.fragment.app.FragmentTransaction;
+import androidx.lifecycle.Lifecycle;
 
-import com.google.android.material.bottomnavigation.BottomNavigationView;
-
-import sh.tuxbox.root.ui.AboutFragment;
-import sh.tuxbox.root.ui.DownloadFragment;
-import sh.tuxbox.root.ui.HomeFragment;
-import sh.tuxbox.root.ui.RootfsFragment;
+import sh.tuxbox.root.ui.PanelFragment;
 import sh.tuxbox.root.ui.TerminalFragment;
 
+/**
+ * Two-page host: a management Panel and a distraction-free Terminal.
+ *
+ * Both pages stay added to the Activity. Switching pages only changes their
+ * visibility and maximum lifecycle, so panel downloads and terminal sessions
+ * are not destroyed or recreated.
+ */
 public class MainActivity extends AppCompatActivity {
 
-    private BottomNavigationView bottomNav;
+    private static final String TAG_PANEL = "page_panel";
+    private static final String TAG_TERMINAL = "page_terminal";
+    private static final String KEY_TERMINAL_VISIBLE = "terminal_visible";
+    private static final String KEY_REQUESTED_ROOTFS = "requested_rootfs";
+
+    private PanelFragment panelPage;
+    private TerminalFragment terminalPage;
+    private String requestedRootfsForNextTerminal;
+    private boolean terminalVisible;
+    private boolean pendingVisibilityApply;
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        bottomNav = findViewById(R.id.bottomNav);
-        bottomNav.setOnItemSelectedListener(this::onNavItemSelected);
+        FragmentManager fm = getSupportFragmentManager();
+        removeUnexpectedRestoredFragments(fm);
 
-        if (savedInstanceState == null) {
-            bottomNav.setSelectedItemId(R.id.nav_home);
+        Fragment restoredPanel = fm.findFragmentByTag(TAG_PANEL);
+        Fragment restoredTerminal = fm.findFragmentByTag(TAG_TERMINAL);
+        if (restoredPanel instanceof PanelFragment) panelPage = (PanelFragment) restoredPanel;
+        if (restoredTerminal instanceof TerminalFragment) terminalPage = (TerminalFragment) restoredTerminal;
+        terminalVisible = savedInstanceState != null
+                && savedInstanceState.getBoolean(KEY_TERMINAL_VISIBLE, false);
+        requestedRootfsForNextTerminal = savedInstanceState == null
+                ? null : savedInstanceState.getString(KEY_REQUESTED_ROOTFS);
+
+        if (panelPage == null) {
+            panelPage = new PanelFragment();
+            fm.beginTransaction()
+                    .add(R.id.fragmentContainer, panelPage, TAG_PANEL)
+                    .commitNow();
         }
 
-        // v3.13 — a permissão POST_NOTIFICATIONS (Android 13+) NÃO é pedida
-        // aqui: no lançamento não há contexto e, negada uma vez, ela fica negada
-        // para sempre — a notificação persistente da sessão simplesmente nunca
-        // aparecia e o app morria em segundo plano sem aviso. O pedido agora
-        // acontece no Terminal, no momento em que a sessão começa
-        // (TerminalFragment.ensureSessionNotification), que também avisa e leva
-        // às configurações se já estiver bloqueada.
+        applyPageVisibility();
+        installBackNavigation();
     }
 
-    private boolean onNavItemSelected(@NonNull MenuItem item) {
-        Fragment f = null;
-        int id = item.getItemId();
-        if (id == R.id.nav_home) {
-            f = new HomeFragment();
-        } else if (id == R.id.nav_download) {
-            f = new DownloadFragment();
-        } else if (id == R.id.nav_rootfs) {
-            f = new RootfsFragment();
-        } else if (id == R.id.nav_terminal) {
-            f = new TerminalFragment();
-        } else if (id == R.id.nav_about) {
-            f = new AboutFragment();
+    /** Remove the old five-tab fragment ("page") when upgrading a live task. */
+    private void removeUnexpectedRestoredFragments(FragmentManager fm) {
+        List<Fragment> unexpected = new ArrayList<>();
+        for (Fragment fragment : fm.getFragments()) {
+            String tag = fragment.getTag();
+            boolean panel = fragment instanceof PanelFragment && TAG_PANEL.equals(tag);
+            boolean terminal = fragment instanceof TerminalFragment && TAG_TERMINAL.equals(tag);
+            if (!panel && !terminal) unexpected.add(fragment);
         }
-        if (f != null) {
-            getSupportFragmentManager().beginTransaction()
-                    .replace(R.id.fragmentContainer, f, "page")
-                    .commit();
-        }
-        return true;
+        if (unexpected.isEmpty()) return;
+        FragmentTransaction tx = fm.beginTransaction();
+        for (Fragment fragment : unexpected) tx.remove(fragment);
+        tx.setReorderingAllowed(true).commitNow();
     }
 
-    /** The terminal tab is reachable from the Rootfs list too; let fragments switch tabs. */
+    private void installBackNavigation() {
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (terminalVisible) {
+                    showPanelPage();
+                } else {
+                    finish();
+                }
+            }
+        });
+    }
+
+    private void showTerminalPage(@Nullable String requestedRootfs) {
+        dismissKeyboardAndFocus();
+        if (terminalPage != null && requestedRootfs != null) {
+            terminalPage.requestRootfs(requestedRootfs);
+        } else if (terminalPage == null) {
+            requestedRootfsForNextTerminal = requestedRootfs;
+        }
+        terminalVisible = true;
+        applyPageVisibility();
+    }
+
+    /** Compatibility entry point for callers that do not preselect a container. */
     public void openTerminalTab() {
-        bottomNav.setSelectedItemId(R.id.nav_terminal);
+        showTerminalPage(null);
+    }
+
+    /** Opens the Terminal page and preselects the requested installed container. */
+    public void openTerminalTab(@Nullable String requestedRootfs) {
+        showTerminalPage(requestedRootfs);
+    }
+
+    /** Returns from Terminal to the preserved management Panel. */
+    public void showPanelPage() {
+        dismissKeyboardAndFocus();
+        terminalVisible = false;
+        applyPageVisibility();
+    }
+
+    private void applyPageVisibility() {
+        FragmentManager fm = getSupportFragmentManager();
+        if (panelPage == null || fm.isStateSaved()) {
+            pendingVisibilityApply = true;
+            return;
+        }
+
+        FragmentTransaction tx = fm.beginTransaction().setReorderingAllowed(true);
+
+        if (terminalVisible) {
+            if (terminalPage == null) {
+                terminalPage = TerminalFragment.create(requestedRootfsForNextTerminal);
+                requestedRootfsForNextTerminal = null;
+                tx.add(R.id.fragmentContainer, terminalPage, TAG_TERMINAL);
+            }
+            tx.setMaxLifecycle(panelPage, Lifecycle.State.STARTED)
+                    .hide(panelPage)
+                    .setMaxLifecycle(terminalPage, Lifecycle.State.RESUMED)
+                    .show(terminalPage);
+        } else {
+            tx.setMaxLifecycle(panelPage, Lifecycle.State.RESUMED)
+                    .show(panelPage);
+            if (terminalPage != null) {
+                tx.setMaxLifecycle(terminalPage, Lifecycle.State.STARTED)
+                        .hide(terminalPage);
+            }
+        }
+
+        tx.commitNow();
+        pendingVisibilityApply = false;
+    }
+
+    private void dismissKeyboardAndFocus() {
+        View focused = getCurrentFocus();
+        if (focused == null) return;
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.hideSoftInputFromWindow(focused.getWindowToken(), 0);
+        }
+        focused.clearFocus();
+    }
+
+    @Override
+    protected void onPostResume() {
+        super.onPostResume();
+        if (pendingVisibilityApply) applyPageVisibility();
+    }
+
+    @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean(KEY_TERMINAL_VISIBLE, terminalVisible);
+        if (requestedRootfsForNextTerminal != null) {
+            outState.putString(KEY_REQUESTED_ROOTFS, requestedRootfsForNextTerminal);
+        }
     }
 }

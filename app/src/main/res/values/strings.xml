@@ -2,12 +2,13 @@
 <resources>
     <string name="app_name">TuxBox</string>
 
-    <!-- bottom nav -->
+    <!-- navegação principal -->
     <string name="tab_home">Início</string>
     <string name="tab_download">Baixar</string>
-    <string name="tab_rootfs">Container</string>
+    <string name="tab_rootfs">Containers</string>
     <string name="tab_terminal">Terminal</string>
     <string name="tab_about">Sobre</string>
+    <string name="panel_open_terminal">Abrir Terminal</string>
 
     <!-- home -->
     <string name="home_container_status">STATUS DO CONTAINER</string>
@@ -67,7 +68,7 @@
 
     <!-- rootfs list -->
     <string name="rootfs_title">Containers instalados</string>
-    <string name="rootfs_none">Nenhum container em /data/local/tuxbox ainda.\nUse a aba Baixar para instalar um.</string>
+    <string name="rootfs_none">Nenhum container em /data/local/tuxbox ainda.\nUse Baixar no Painel para instalar um.</string>
     <string name="rootfs_btn_refresh">Atualizar</string>
     <string name="rootfs_btn_terminal">Terminal</string>
     <string name="rootfs_btn_delete">Deletar</string>
@@ -78,7 +79,8 @@
     <!-- terminal -->
     <string name="term_title">Terminal</string>
     <string name="term_select">Container / ambiente</string>
-    <string name="term_no_rootfs">Nenhum container instalado — use a aba Baixar</string>
+    <string name="term_no_rootfs">Nenhum container instalado — use Baixar no Painel</string>
+    <string name="term_back_panel">Voltar ao Painel</string>
     <string name="term_options">Opções da sessão</string>
     <string name="term_net">Rede isolada (--net)</string>
     <string name="term_gui">Interface gráfica (--gui)</string>
@@ -118,7 +120,7 @@
 
     <!-- about -->
     <string name="about_title">Sobre o TuxBox</string>
-    <string name="about_body">O <b>TuxBox</b> roda containers Linux leves no seu Android usando namespaces de montagem (unshare + pivot_root), sem chroot nem truques.\n\n• <b>Baixar</b>: instala containers de distribuições Linux via linuxcontainers.org\n• <b>Container</b>: gerencia os containers instalados em /data/local/tuxbox\n• <b>Terminal</b>: emulador de terminal embutido (estilo Termux) conectado ao container via ptyd + su\n\nRequer root (Magisk ou KernelSU).</string>
+    <string name="about_body">O <b>TuxBox</b> roda containers Linux leves no seu Android usando namespaces de montagem (unshare + pivot_root), sem chroot nem truques.\n\n• <b>Baixar</b>: instala containers de distribuições Linux via linuxcontainers.org\n• <b>Containers</b>: gerencia os containers instalados em /data/local/tuxbox\n• <b>Terminal</b>: emulador de terminal embutido (estilo Termux) conectado ao container via ptyd + su\n\nRequer root (Magisk ou KernelSU).</string>
 
     <!-- text selection (usados pelo TerminalView do Termux) -->
     <string name="copy_text">Copiar</string>

@@ -1,5 +1,6 @@
 package sh.tuxbox.root.ui;
 
+import android.app.Activity;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -22,6 +23,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
+import sh.tuxbox.root.MainActivity;
 import sh.tuxbox.root.R;
 import sh.tuxbox.root.RootShell;
 import sh.tuxbox.root.util.AssetInstaller;
@@ -34,6 +36,7 @@ public class RootfsFragment extends Fragment {
     private TextView tvFree, tvNone;
     private MaterialCardView cardNone;
     private MaterialButton btnRefresh;
+    private int refreshGeneration = 0;
 
     @Nullable
     @Override
@@ -50,7 +53,6 @@ public class RootfsFragment extends Fragment {
         cardNone = view.findViewById(R.id.cardNone);
         btnRefresh = view.findViewById(R.id.btnRefresh);
         btnRefresh.setOnClickListener(v -> refresh());
-        refresh();
     }
 
     @Override
@@ -60,6 +62,7 @@ public class RootfsFragment extends Fragment {
     }
 
     private void refresh() {
+        final int generation = ++refreshGeneration;
         RootShell.runAsync(TuxPaths.LIST_ROOTFS_CMD + "; echo ---; df -h /data/local 2>/dev/null | tail -n 1 | awk '{print $4\" livre de \"$2\" (\"$5\" usado)\"}'", out -> {
             final List<String> names = new ArrayList<>();
             final String[] freeRef = {""};
@@ -75,7 +78,12 @@ public class RootfsFragment extends Fragment {
                     names.add(l);
                 }
             }
-            requireActivity().runOnUiThread(() -> render(names, freeRef[0]));
+            if (!isAdded() || getActivity() == null) return;
+            getActivity().runOnUiThread(() -> {
+                if (generation == refreshGeneration && isAdded() && getView() != null) {
+                    render(names, freeRef[0]);
+                }
+            });
         });
     }
 
@@ -168,20 +176,25 @@ public class RootfsFragment extends Fragment {
         // Quick sanity probe before switching tabs: if /bin/sh cannot exec, we show
         // the real reason and offer a one-tap repair instead of a dead terminal.
         final String dst = TuxPaths.ROOTFS_BASE + "/" + name;
+        final Activity activity = getActivity();
+        if (activity == null) return;
         btnRefresh.setEnabled(false);
         RootShell.runAsync(
                 "ls -lZ " + dst + "/bin/sh 2>&1; echo ---; grep -E ' /data/local |" + name + "' /proc/mounts 2>/dev/null; echo ---; chroot " + dst + " /bin/sh -c 'echo CHROOT_OK' 2>&1",
-                out -> requireActivity().runOnUiThread(() -> {
-                    btnRefresh.setEnabled(true);
-                    if (out.contains("CHROOT_OK")) {
-                        TerminalFragment.setPendingRootfs(name);
-                        if (getActivity() instanceof sh.tuxbox.root.MainActivity) {
-                            ((sh.tuxbox.root.MainActivity) getActivity()).openTerminalTab();
+                out -> {
+                    if (getActivity() != activity || activity.isFinishing()) return;
+                    activity.runOnUiThread(() -> {
+                        if (getActivity() != activity || getView() == null) return;
+                        btnRefresh.setEnabled(true);
+                        if (out.contains("CHROOT_OK")) {
+                            if (activity instanceof MainActivity) {
+                                ((MainActivity) activity).openTerminalTab(name);
+                            }
+                        } else {
+                            showRepairDialog(name, out);
                         }
-                    } else {
-                        showRepairDialog(name, out);
-                    }
-                })
+                    });
+                }
         );
     }
 
@@ -199,21 +212,26 @@ public class RootfsFragment extends Fragment {
     /** Fix exec/traverse bits and SELinux labels on a broken rootfs, then retest. */
     private void repair(String name) {
         final String dst = TuxPaths.ROOTFS_BASE + "/" + name;
-        Toast.makeText(requireContext(), "Reparando…", Toast.LENGTH_SHORT).show();
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        Toast.makeText(activity, "Reparando…", Toast.LENGTH_SHORT).show();
         RootShell.runAsync(
                 "chmod -R u+rwX,go+rX " + dst + " 2>&1; restorecon -RF " + dst + " 2>/dev/null || true; chroot " + dst + " /bin/sh -c 'echo CHROOT_OK' 2>&1",
-                out -> requireActivity().runOnUiThread(() -> {
-                    if (out.contains("CHROOT_OK")) {
-                        Toast.makeText(requireContext(), "Reparado! Abrindo terminal…", Toast.LENGTH_SHORT).show();
-                        TerminalFragment.setPendingRootfs(name);
-                        if (getActivity() instanceof sh.tuxbox.root.MainActivity) {
-                            ((sh.tuxbox.root.MainActivity) getActivity()).openTerminalTab();
+                out -> {
+                    if (getActivity() != activity || activity.isFinishing()) return;
+                    activity.runOnUiThread(() -> {
+                        if (getActivity() != activity || getView() == null) return;
+                        if (out.contains("CHROOT_OK")) {
+                            Toast.makeText(activity, "Reparado! Abrindo terminal…", Toast.LENGTH_SHORT).show();
+                            if (activity instanceof MainActivity) {
+                                ((MainActivity) activity).openTerminalTab(name);
+                            }
+                        } else {
+                            String brief = out.length() > 900 ? out.substring(out.length() - 900) : out;
+                            Toast.makeText(activity, "Ainda falhando:\n" + brief, Toast.LENGTH_LONG).show();
                         }
-                    } else {
-                        String brief = out.length() > 900 ? out.substring(out.length() - 900) : out;
-                        Toast.makeText(requireContext(), "Ainda falhando:\n" + brief, Toast.LENGTH_LONG).show();
-                    }
-                })
+                    });
+                }
         );
     }
 
@@ -227,8 +245,16 @@ public class RootfsFragment extends Fragment {
     }
 
     private void delete(String name) {
-        RootShell.runAsync("rm -rf " + TuxPaths.ROOTFS_BASE + "/" + name, out ->
-                Toast.makeText(requireContext(), getString(R.string.rootfs_delete_ok, name), Toast.LENGTH_SHORT).show());
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        RootShell.runAsync("rm -rf " + TuxPaths.ROOTFS_BASE + "/" + name, out -> {
+            if (getActivity() != activity || activity.isFinishing()) return;
+            activity.runOnUiThread(() -> {
+                if (getActivity() == activity && getView() != null) {
+                    Toast.makeText(activity, getString(R.string.rootfs_delete_ok, name), Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
         refresh();
     }
 }

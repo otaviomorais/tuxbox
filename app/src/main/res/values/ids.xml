@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="extraKeyDefaultColor" type="id" />
+    <item name="nav_home" type="id" />
+    <item name="nav_download" type="id" />
+    <item name="nav_rootfs" type="id" />
+    <item name="nav_terminal" type="id" />
+    <item name="nav_about" type="id" />
 </resources>

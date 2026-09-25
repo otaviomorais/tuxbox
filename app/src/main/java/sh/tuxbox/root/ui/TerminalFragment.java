@@ -6,6 +6,8 @@ import android.content.pm.PackageManager;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -37,6 +39,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import sh.tuxbox.root.R;
+import sh.tuxbox.root.MainActivity;
 import sh.tuxbox.root.RootShell;
 import sh.tuxbox.root.TerminalService;
 import sh.tuxbox.root.util.AssetInstaller;
@@ -54,11 +57,21 @@ import sh.tuxbox.root.util.TuxPaths;
  */
 public class TerminalFragment extends Fragment {
 
-    /** Requested by the Rootfs list tab: open a terminal inside this rootfs. */
-    private static String pendingRootfs = null;
+    private static final String ARG_REQUESTED_ROOTFS = "requested_rootfs";
+    private static final String KEY_REQUESTED_ROOTFS = "requested_rootfs_state";
+    private static final String KEY_OPTIONS_EXPANDED = "options_expanded";
 
-    public static void setPendingRootfs(String name) {
-        pendingRootfs = name;
+    /** Non-null only while a container selection is waiting for the rootfs list. */
+    private String requestedRootfs;
+
+    public static TerminalFragment create(@Nullable String requestedRootfs) {
+        TerminalFragment fragment = new TerminalFragment();
+        if (requestedRootfs != null) {
+            Bundle args = new Bundle();
+            args.putString(ARG_REQUESTED_ROOTFS, requestedRootfs);
+            fragment.setArguments(args);
+        }
+        return fragment;
     }
 
     /** One open terminal tab = one running container session. */
@@ -78,11 +91,13 @@ public class TerminalFragment extends Fragment {
     /** All open tabs, kept static so they survive tab switches / activity recreation. */
     private static final List<TerminalTab> sTabs = new ArrayList<>();
     private static int sActiveTab = -1;
+    private static Context appContext;
 
     /** True se há uma aba de terminal aberta para o rootfs dado. */
     static boolean isEnvRunning(String env) {
         for (TerminalTab t : sTabs) {
-            if (t != null && env.equals(t.label)) return true;
+            if (t != null && t.session != null && t.session.isRunning()
+                    && env.equals(t.label)) return true;
         }
         return false;
     }
@@ -90,7 +105,7 @@ public class TerminalFragment extends Fragment {
     private Spinner spinnerEnv;
     private MaterialCheckBox chkNet;
     private MaterialCheckBox chkGui;
-    private MaterialButton btnOpen, btnClose, btnNewTab;
+    private MaterialButton btnOpen, btnClose, btnNewTab, btnTerminalToPanel;
     private TextView tvTermStatus, btnToggleOpts;
     private LinearLayout optsPanel, extraKeysRow, tabsRow;
     private HorizontalScrollView tabsScroll;
@@ -101,10 +116,18 @@ public class TerminalFragment extends Fragment {
 
     private final List<String> envs = new ArrayList<>();
 
-    /** Painel de opções do menu: expandido por padrão; recolhido (manual ou
-     *  automaticamente ao abrir o teclado) devolve espaço pro terminal. */
-    private boolean optionsExpanded = true;
+    /** O Terminal abre focado; as opções ficam recolhidas até o usuário pedir. */
+    private boolean optionsExpanded = false;
     private boolean autoCollapsed = false;
+    private boolean pageVisible = false;
+    private int environmentRefreshGeneration = 0;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    @Override
+    public void onAttach(@NonNull Context context) {
+        super.onAttach(context);
+        appContext = context.getApplicationContext();
+    }
 
     @Nullable
     @Override
@@ -115,12 +138,22 @@ public class TerminalFragment extends Fragment {
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
+        Bundle args = getArguments();
+        if (savedInstanceState != null) {
+            String savedRequested = savedInstanceState.getString(KEY_REQUESTED_ROOTFS);
+            if (savedRequested != null) requestedRootfs = savedRequested;
+            optionsExpanded = savedInstanceState.getBoolean(KEY_OPTIONS_EXPANDED, false);
+        } else if (args != null && requestedRootfs == null) {
+            requestedRootfs = args.getString(ARG_REQUESTED_ROOTFS);
+            args.remove(ARG_REQUESTED_ROOTFS);
+        }
         spinnerEnv = view.findViewById(R.id.spinnerEnv);
         chkNet = view.findViewById(R.id.chkNet);
         chkGui = view.findViewById(R.id.chkGui);
         btnOpen = view.findViewById(R.id.btnOpen);
         btnClose = view.findViewById(R.id.btnClose);
         btnNewTab = view.findViewById(R.id.btnNewTab);
+        btnTerminalToPanel = view.findViewById(R.id.btnTerminalToPanel);
         tvTermStatus = view.findViewById(R.id.tvTermStatus);
         btnToggleOpts = view.findViewById(R.id.btnToggleOpts);
         optsPanel = view.findViewById(R.id.optsPanel);
@@ -129,8 +162,15 @@ public class TerminalFragment extends Fragment {
         tabsRow = view.findViewById(R.id.tabsRow);
         tabsScroll = view.findViewById(R.id.tabsScroll);
 
+        btnTerminalToPanel.setOnClickListener(v -> {
+            if (getActivity() instanceof MainActivity) {
+                ((MainActivity) getActivity()).showPanelPage();
+            }
+        });
+
         // Painel de opções recolhível: o terminal ganha espaço e o teclado não
         // esconde o texto. O painel fecha sozinho quando o teclado abre.
+        setOptionsExpanded(optionsExpanded);
         btnToggleOpts.setOnClickListener(v -> setOptionsExpanded(!optionsExpanded));
         ViewCompat.setOnApplyWindowInsetsListener(view, (v, insets) -> {
             boolean imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime());
@@ -162,16 +202,57 @@ public class TerminalFragment extends Fragment {
         });
 
         setupExtraKeys();
-        refreshEnvironments();
         attachExistingSessionIfAny();
     }
 
     /** Expande/recolhe o painel de opções (checkbox + ações) do menu do terminal. */
+    @Override
+    public void onResume() {
+        super.onResume();
+        pageVisible = true;
+        refreshEnvironments();
+        if (getView() != null && sActiveTab >= 0 && sActiveTab < sTabs.size()) {
+            ensureSessionNotification(sTabs.get(sActiveTab).label);
+            terminalView.requestFocus();
+            terminalView.postDelayed(() -> {
+                if (pageVisible && isAdded() && getView() != null) {
+                    TerminalClients.showSoftInput(requireContext(), terminalView);
+                }
+            }, 300);
+        }
+    }
+
+    @Override
+    public void onPause() {
+        pageVisible = false;
+        super.onPause();
+    }
+
+    @Override
+    public void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean(KEY_OPTIONS_EXPANDED, optionsExpanded);
+        if (requestedRootfs != null) outState.putString(KEY_REQUESTED_ROOTFS, requestedRootfs);
+    }
+
     private void setOptionsExpanded(boolean expanded) {
         if (optionsExpanded == expanded) return;
         optionsExpanded = expanded;
         optsPanel.setVisibility(expanded ? View.VISIBLE : View.GONE);
         btnToggleOpts.setText(expanded ? "\u25be" : "\u25b4"); // ▾ / ▴
+    }
+
+    /** Preselects a container requested by the Containers panel. */
+    public void requestRootfs(@NonNull String name) {
+        requestedRootfs = name;
+        if (getView() == null || spinnerEnv == null) return;
+        int index = envs.indexOf(name);
+        if (index >= 0) {
+            spinnerEnv.setSelection(index);
+            requestedRootfs = null;
+        } else {
+            refreshEnvironments();
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -267,7 +348,7 @@ public class TerminalFragment extends Fragment {
         tvTermStatus.setText(getString(R.string.term_status_run) + "  ·  " + tab.label
                 + " (aba " + (sActiveTab + 1) + "/" + sTabs.size() + ")");
         selectEnvInSpinner(tab.label);
-        terminalView.requestFocus();
+        if (pageVisible) terminalView.requestFocus();
         rebuildTabs();
     }
 
@@ -305,8 +386,9 @@ public class TerminalFragment extends Fragment {
 
     /** Called by the session's client when the container process exits. */
     private void onTerminalSessionFinished(TerminalSession finished) {
-        if (getActivity() == null) return;
-        requireActivity().runOnUiThread(() -> {
+        // Use the main handler instead of requireActivity(): the session may end
+        // after the Activity is recreated or while the Terminal page is hidden.
+        mainHandler.post(() -> {
             int index = -1;
             for (int i = 0; i < sTabs.size(); i++) {
                 if (sTabs.get(i).session == finished) { index = i; break; }
@@ -318,15 +400,18 @@ public class TerminalFragment extends Fragment {
             sTabs.remove(index);
             if (sTabs.isEmpty()) {
                 sActiveTab = -1;
-                terminalView.attachSession(null);
-                tvTermStatus.setText(getString(R.string.term_status_err,
-                        "processo finalizado (exit=" + exitCode + ")"));
-                TerminalService.stop(requireContext());
-                rebuildTabs();
+                Context ctx = appContext;
+                if (ctx != null) TerminalService.stop(ctx);
+                if (isAdded() && getView() != null) {
+                    terminalView.attachSession(null);
+                    tvTermStatus.setText(getString(R.string.term_status_err,
+                            "processo finalizado (exit=" + exitCode + ")"));
+                    rebuildTabs();
+                }
             } else {
                 if (index < sActiveTab) sActiveTab--;
                 else if (sActiveTab >= sTabs.size()) sActiveTab = sTabs.size() - 1;
-                attachActiveTab();
+                if (isAdded() && getView() != null) attachActiveTab();
             }
         });
     }
@@ -334,19 +419,32 @@ public class TerminalFragment extends Fragment {
     /** If sessions are still running (from a previous visit of this tab, or after
      *  the activity was recreated in the background), re-attach them and the tab bar. */
     private void attachExistingSessionIfAny() {
+        pruneDeadTabs();
         if (sTabs.isEmpty() || sActiveTab < 0 || sActiveTab >= sTabs.size()) {
             rebuildTabs();
             return;
         }
         attachActiveTab();
-        terminalView.requestFocus();
-        terminalView.postDelayed(() -> {
-            if (getView() != null) TerminalClients.showSoftInput(requireContext(), terminalView);
-        }, 300);
+    }
+
+    /** Drops static entries whose PTY already exited before the view was reattached. */
+    private void pruneDeadTabs() {
+        for (int i = sTabs.size() - 1; i >= 0; i--) {
+            TerminalTab tab = sTabs.get(i);
+            if (tab != null && tab.session != null && tab.session.isRunning()) continue;
+            sTabs.remove(i);
+            if (i < sActiveTab) sActiveTab--;
+        }
+        if (sTabs.isEmpty()) {
+            sActiveTab = -1;
+            if (appContext != null) TerminalService.stop(appContext);
+        } else if (sActiveTab < 0) sActiveTab = 0;
+        else if (sActiveTab >= sTabs.size()) sActiveTab = sTabs.size() - 1;
     }
 
     /** Open a new tab: a brand-new container on the selected rootfs. */
     private void newTab() {
+        if (!isAdded() || getView() == null) return;
         String env = spinnerEnv.getSelectedItem() == null ? null : spinnerEnv.getSelectedItem().toString();
         if (env == null || env.equals(getString(R.string.term_no_rootfs))) {
             Toast.makeText(requireContext(), R.string.term_no_rootfs, Toast.LENGTH_SHORT).show();
@@ -358,11 +456,13 @@ public class TerminalFragment extends Fragment {
         btnOpen.setEnabled(false);
         tvTermStatus.setText(R.string.term_status_launch);
 
+        Context appContext = requireContext().getApplicationContext();
+        String ptyd = AssetInstaller.ptydPath(appContext).getAbsolutePath();
+        String binDir = AssetInstaller.binDir(appContext).getAbsolutePath();
+
         new Thread(() -> {
             try {
-                AssetInstaller.install(requireContext());
-                String ptyd = AssetInstaller.ptydPath(requireContext()).getAbsolutePath();
-                String binDir = AssetInstaller.binDir(requireContext()).getAbsolutePath();
+                AssetInstaller.install(appContext);
 
                 List<String> argv = new ArrayList<>();
                 argv.add(ptyd);
@@ -379,10 +479,13 @@ public class TerminalFragment extends Fragment {
                 pb.redirectErrorStream(false);
                 Process proc = pb.start();
 
-                // Create the session and attach on the UI thread (Handler inside
-                // TerminalSession requires the main looper, and attachSession must
-                // run on the main thread).
-                requireActivity().runOnUiThread(() -> {
+                // Create the session and attach on the main thread. Do not touch
+                // views or request focus if the user already returned to Panel.
+                mainHandler.post(() -> {
+                    if (!isAdded() || getView() == null) {
+                        try { proc.destroy(); } catch (Exception ignored) { }
+                        return;
+                    }
                     try {
                         TerminalSession sess = new TerminalSession(proc.getInputStream(), proc.getOutputStream(), 2000, null);
                         TerminalTab tab = new TerminalTab(sess, proc, env, useNet);
@@ -394,20 +497,26 @@ public class TerminalFragment extends Fragment {
                         // sessão em segundo plano. Se a permissão/canal estiver
                         // desligado, ela some e o app morre sem aviso: pide em
                         // contexto (aqui) e, se já negada, leva às configurações.
-                        ensureSessionNotification(env);
-                        terminalView.requestFocus();
-                        TerminalClients.showSoftInput(requireContext(), terminalView);
+                        if (pageVisible) {
+                            ensureSessionNotification(env);
+                            terminalView.requestFocus();
+                            TerminalClients.showSoftInput(requireContext(), terminalView);
+                        }
                     } catch (Exception e2) {
-                        tvTermStatus.setText(getString(R.string.term_status_err, e2.getMessage()));
+                        if (isAdded() && getView() != null) {
+                            tvTermStatus.setText(getString(R.string.term_status_err, e2.getMessage()));
+                        }
                         try { proc.destroy(); } catch (Exception ignored) { }
                     } finally {
-                        btnOpen.setEnabled(true);
+                        if (isAdded() && getView() != null) btnOpen.setEnabled(true);
                     }
                 });
             } catch (Exception e) {
-                requireActivity().runOnUiThread(() -> {
-                    tvTermStatus.setText(getString(R.string.term_status_err, e.getMessage()));
-                    btnOpen.setEnabled(true);
+                mainHandler.post(() -> {
+                    if (isAdded() && getView() != null) {
+                        tvTermStatus.setText(getString(R.string.term_status_err, e.getMessage()));
+                        btnOpen.setEnabled(true);
+                    }
                 });
             }
         }).start();
@@ -577,14 +686,21 @@ public class TerminalFragment extends Fragment {
 
     /** Refresh the rootfs dropdown from the base dir (rootfs names only, no host shell). */
     private void refreshEnvironments() {
+        final int generation = ++environmentRefreshGeneration;
         RootShell.runAsync(TuxPaths.LIST_ROOTFS_CMD, out -> {
-            envs.clear();
+            // Parse into a worker-local list; never mutate the ArrayAdapter's
+            // backing list from the executor thread.
+            List<String> names = new ArrayList<>();
             for (String line : out.split("\n")) {
                 String l = line.trim();
                 if (l.isEmpty() || l.startsWith("$ ") || l.startsWith("[exit=") || l.startsWith("ERR:")) continue;
-                envs.add(l);
+                names.add(l);
             }
-            requireActivity().runOnUiThread(() -> {
+            mainHandler.post(() -> {
+                if (generation != environmentRefreshGeneration
+                        || !isAdded() || getView() == null) return;
+                envs.clear();
+                envs.addAll(names);
                 boolean hasRootfs = !envs.isEmpty();
                 if (!hasRootfs) envs.add(getString(R.string.term_no_rootfs));
                 ArrayAdapter<String> envAdapter = new ArrayAdapter<>(requireContext(), R.layout.spinner_env_item, envs);
@@ -592,13 +708,15 @@ public class TerminalFragment extends Fragment {
                 spinnerEnv.setAdapter(envAdapter);
                 btnOpen.setEnabled(hasRootfs);
                 if (hasRootfs) {
-                    if (pendingRootfs != null && envs.contains(pendingRootfs)) {
-                        spinnerEnv.setSelection(envs.indexOf(pendingRootfs));
+                    if (requestedRootfs != null && envs.contains(requestedRootfs)) {
+                        spinnerEnv.setSelection(envs.indexOf(requestedRootfs));
+                        requestedRootfs = null;
+                        Bundle args = getArguments();
+                        if (args != null) args.remove(ARG_REQUESTED_ROOTFS);
                     } else if (sActiveTab >= 0 && sActiveTab < sTabs.size()) {
                         selectEnvInSpinner(sTabs.get(sActiveTab).label);
                     }
                 }
-                pendingRootfs = null;
             });
         });
     }

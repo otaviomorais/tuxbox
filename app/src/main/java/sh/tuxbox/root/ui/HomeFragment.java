@@ -65,7 +65,12 @@ public class HomeFragment extends Fragment {
         btnInstall.setOnClickListener(v -> installBinaries());
         btnInstallGpu.setOnClickListener(v -> installMesa());
         btnGpuDiag.setOnClickListener(v -> gpuDiagnostics());
+    }
 
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (getView() == null) return;
         checkAll();
         refreshHero();
     }
