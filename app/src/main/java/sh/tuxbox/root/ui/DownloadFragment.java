@@ -85,6 +85,15 @@ public class DownloadFragment extends Fragment {
     private int operationGeneration = 0;
     private int indexGeneration = 0;
 
+    private static final class SymlinkSpec {
+        final String path;
+        final String target;
+        SymlinkSpec(String path, String target) {
+            this.path = path;
+            this.target = target;
+        }
+    }
+
     @Override
     public void onAttach(@NonNull Context context) {
         super.onAttach(context);
@@ -310,9 +319,9 @@ public class DownloadFragment extends Fragment {
                 postToUi(generation, () -> tvProgress.setText(getString(R.string.dl_downloading, fname)));
                 download(rootfsUrl, tar, generation);
                 postToUi(generation, () -> tvProgress.setText("Extraindo arquivos…"));
-                extract(tar, extractDir);
+                List<SymlinkSpec> symlinks = extract(tar, extractDir);
                 postToUi(generation, () -> tvProgress.setText(R.string.dl_moving));
-                moveToMnt(fname, extractDir);
+                moveToMnt(fname, extractDir, symlinks);
                 deleteRecursive(tmp);
                 postToUi(generation, () -> {
                     tvProgress.setText(getString(R.string.dl_done, fname));
@@ -393,9 +402,9 @@ public class DownloadFragment extends Fragment {
     }
 
     /** Extract tar.xz in Java (XZ + TarArchiveInputStream), returns number of entries. */
-    private int extract(File tarXz, File destDir) throws Exception {
+    private List<SymlinkSpec> extract(File tarXz, File destDir) throws Exception {
         destDir.mkdirs();
-        int entries = 0;
+        List<SymlinkSpec> symlinks = new ArrayList<>();
         try (TarArchiveInputStream tar = new TarArchiveInputStream(new XZCompressorInputStream(new BufferedInputStream(new FileInputStream(tarXz), 65536)))) {
             TarArchiveEntry entry;
             while ((entry = tar.getNextTarEntry()) != null) {
@@ -410,11 +419,16 @@ public class DownloadFragment extends Fragment {
                     File parent = outFile.getParentFile();
                     if (parent != null) parent.mkdirs();
                     String linkTarget = entry.getLinkName();
+                    symlinks.add(new SymlinkSpec(name, linkTarget));
                     java.nio.file.Path link = outFile.toPath();
                     try { java.nio.file.Files.deleteIfExists(link); } catch (Exception ignore) { }
-                    try { java.nio.file.Files.createSymbolicLink(link, java.nio.file.Paths.get(linkTarget)); } catch (Exception ignore) {
-                        // symlinks may fail on some fs; fall back to writing a dummy file
-                        try (OutputStream fos = new FileOutputStream(outFile)) { }
+                    try {
+                        java.nio.file.Files.createSymbolicLink(link, java.nio.file.Paths.get(linkTarget));
+                    } catch (Exception ignore) {
+                        // Android app storage may reject symlink(2). Never fall
+                        // back to FileOutputStream here: for /bin -> usr/bin
+                        // that follows the link into a directory and throws
+                        // EACCES. The root-side repair below recreates it.
                     }
                 } else {
                     File parent = outFile.getParentFile();
@@ -426,10 +440,9 @@ public class DownloadFragment extends Fragment {
                     }
                     applyMode(outFile, entry.getMode());
                 }
-                entries++;
             }
         }
-        return entries;
+        return symlinks;
     }
 
     /**
@@ -466,14 +479,36 @@ public class DownloadFragment extends Fragment {
      *  Afterwards enforce exec/traverse bits and fix SELinux labels: files that come from
      *  the app's sandbox can arrive without +x or with app_data_file labels that block
      *  exec by the su domain (symptom: "chroot: can't execute Permission denied"). */
-    private void moveToMnt(String name, File extractDir) throws Exception {
+    private void moveToMnt(String name, File extractDir, List<SymlinkSpec> symlinks) throws Exception {
         String src = extractDir.getAbsolutePath();
         String dst = TuxPaths.ROOTFS_BASE + "/" + name;
-        String result = RootShell.run("rm -rf " + dst + "; mkdir -p " + TuxPaths.ROOTFS_BASE + "; cp -a " + src + "/. " + dst + " 2>&1; chown -R 0:0 " + dst
-                + "; chmod -R u+rwX,go+rX,go-w " + dst + " 2>&1; restorecon -RF " + dst + " 2>&1 || true; grep -qs '^_apt:' " + dst + "/etc/passwd && chown -R _apt:root " + dst + "/var/lib/apt/lists 2>/dev/null || true; echo DST=$(ls -d " + dst + " 2>&1)");
+        StringBuilder repair = new StringBuilder();
+        for (SymlinkSpec link : symlinks) {
+            String targetPath = dst + "/" + link.path;
+            String parent = new File(targetPath).getParent();
+            repair.append("mkdir -p ").append(shellQuote(parent)).append("; ");
+            repair.append("rm -rf ").append(shellQuote(targetPath)).append("; ");
+            repair.append("ln -s ").append(shellQuote(link.target)).append(" ")
+                    .append(shellQuote(targetPath)).append(" 2>/dev/null || true; ");
+        }
+        String result = RootShell.run("rm -rf " + shellQuote(dst)
+                + "; mkdir -p " + shellQuote(TuxPaths.ROOTFS_BASE)
+                + "; cp -a " + shellQuote(src + "/.") + " " + shellQuote(dst) + " 2>&1; "
+                + repair
+                + "chown -R 0:0 " + shellQuote(dst)
+                + "; chmod -R u+rwX,go+rX,go-w " + shellQuote(dst) + " 2>&1; "
+                + "restorecon -RF " + shellQuote(dst) + " 2>&1 || true; "
+                + "grep -qs '^_apt:' " + shellQuote(dst + "/etc/passwd") + " && chown -R _apt:root "
+                + shellQuote(dst + "/var/lib/apt/lists") + " 2>/dev/null || true; "
+                + "echo DST=$(ls -d " + shellQuote(dst) + " 2>&1)");
         if (!result.contains("DST=" + dst)) {
             throw new IllegalStateException("falha ao mover para " + TuxPaths.ROOTFS_BASE + ": " + result);
         }
+    }
+
+    private static String shellQuote(String value) {
+        if (value == null) return "''";
+        return "'" + value.replace("'", "'\\''") + "'";
     }
 
     // ---- import via SAF ----
@@ -514,8 +549,8 @@ public class DownloadFragment extends Fragment {
                 }
 
                 postToUi(generation, () -> tvProgress.setText("Extraindo arquivos…"));
-                extract(tar, extractDir);
-                moveToMnt(fname2, extractDir);
+                List<SymlinkSpec> symlinks = extract(tar, extractDir);
+                moveToMnt(fname2, extractDir, symlinks);
                 deleteRecursive(tmp);
                 postToUi(generation, () -> {
                     tvProgress.setText(getString(R.string.dl_done, fname2));
