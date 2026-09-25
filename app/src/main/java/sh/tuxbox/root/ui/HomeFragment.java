@@ -344,6 +344,16 @@ public class HomeFragment extends Fragment {
                 // os-release + fallback por gerenciador de pacotes.
                 setMesaStatus(getString(R.string.mesa_detect));
                 String rootfs = base + "/" + env;
+                // Keep the helper/config available even when the container was
+                // created before v3.31; this also makes the button usable on
+                // Arch without opening a terminal first.
+                try {
+                    AssetInstaller.install(appCtx);
+                    String pacmanHelper = AssetInstaller.binDir(appCtx).getAbsolutePath() + "/ensure-pacman";
+                    if (new File(pacmanHelper).isFile()) {
+                        RootShell.run(shellQuote(pacmanHelper) + " " + shellQuote(rootfs) + " 2>/dev/null || true");
+                    }
+                } catch (Exception ignored) { }
                 String osrel = RootShell.run(
                         "echo '@@OSBEGIN@@'; cat " + shellQuote(rootfs + "/etc/os-release")
                                 + " 2>/dev/null; echo '@@OSEND@@';"
@@ -392,34 +402,38 @@ public class HomeFragment extends Fragment {
                 downloadTo(info[2], tmp);
                 String tmpPath = tmp.getAbsolutePath();
 
-                // 4) Extração com checagem real do retorno do tar (o shell root
-                // consegue ler o cache do app — mesmo padrão do fluxo de download).
+                // 4) Extração/instalação com checagem real do retorno.
                 //
-                // v3.19 — PROTEÇÃO CONTRA O APT: em imagem Debian o
-                // libvulkan_freedreno.so do Turnip custom (17,4 MB, backend KGSL)
-                // é sobrescrito pelo pacote mesa-vulkan-drivers da distro (10,6 MB)
-                // em qualquer apt install/upgrade — e aí o loader Vulkan pula o
-                // ICD e cai no lavapipe (llvmpipe). dpkg-divert tira o arquivo do
-                // domínio do apt (renomeia para .dpkg-divert) ANTES da extração,
-                // que é o mecanismo oficial para ficheiros geridos à mão.
+                // Debian/Ubuntu/etc. recebem um tar com os arquivos já no
+                // layout do rootfs. O asset Arch é um pacote diferente: um
+                // tar externo contendo vários *.pkg.tar.xz. Extraí-lo direto
+                // no rootfs deixava apenas os .pkg.tar.xz na raiz, e por isso
+                // o status continuava dizendo que o Mesa não estava instalado.
                 setMesaStatus(getString(R.string.mesa_extract));
                 final String RFS = base + "/" + env;
-                String z = info[1].endsWith(".gz") ? "z" : "";
-                String out = RootShell.run(
-                        "T=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo $(uname -m)-linux-gnu);"
-                        + " D=" + RFS + ";"
-                        + " for p in \"/usr/lib/$T/libvulkan_freedreno.so\" \"/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json\"; do"
-                        + "   if [ -e \"$D$p\" ] || [ -L \"$D$p\" ]; then"
-                        + "     chroot " + RFS + " dpkg-divert --add --rename --divert \"$p\" \"$p.dpkg-divert\" >/dev/null 2>&1 || true;"
-                        + "   fi;"
-                        + " done;"
-                        + " tar -x" + z + "f '" + tmpPath + "' -C '" + RFS + "' 2>&1;"
-                        + " rc_tar=$?;"
-                        + " if [ \"$rc_tar\" = \"0\" ] && [ -x '" + RFS + "/sbin/ldconfig' ]; then chroot '" + RFS + "' /sbin/ldconfig 2>/dev/null || true; fi;"
-                        // Diagnóstico: tamanho do lib do Turnip (distro ~10,5 MB,
-                        // custom/backend KGSL ~17,4 MB) — entra no log da aba Home.
-                        + " echo \"TURNIP_LIB=$(stat -c %s '" + RFS + "/usr/lib/$T/libvulkan_freedreno.so' 2>/dev/null || echo 0)\";"
-                        + " rm -f '" + tmpPath + "'; echo \"TAR_RC=$rc_tar\"");
+                String out;
+                if ("arch".equals(canonicalDistro(idc[0]))
+                        || "arch".equals(canonicalDistro(idc[2]))) {
+                    mesaLog("Arch: instalando pacotes Mesa via pacman");
+                    out = installArchMesaBundle(tmpPath, RFS);
+                } else {
+                    String z = info[1].endsWith(".gz") ? "z" : "";
+                    out = RootShell.run(
+                            "T=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo $(uname -m)-linux-gnu);"
+                            + " D=" + RFS + ";"
+                            + " for p in \"/usr/lib/$T/libvulkan_freedreno.so\" \"/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json\"; do"
+                            + "   if [ -e \"$D$p\" ] || [ -L \"$D$p\" ]; then"
+                            + "     chroot " + RFS + " dpkg-divert --add --rename --divert \"$p\" \"$p.dpkg-divert\" >/dev/null 2>&1 || true;"
+                            + "   fi;"
+                            + " done;"
+                            + " tar -x" + z + "f '" + tmpPath + "' -C '" + RFS + "' 2>&1;"
+                            + " rc_tar=$?;"
+                            + " if [ \"$rc_tar\" = \"0\" ]; then chroot " + RFS + " /sbin/ldconfig 2>/dev/null || chroot " + RFS + " /usr/bin/ldconfig 2>/dev/null || true; fi;"
+                            // Diagnóstico: tamanho do lib do Turnip (distro ~10,5 MB,
+                            // custom/backend KGSL ~17,4 MB) — entra no log da aba Home.
+                            + " echo TURNIP_LIB=$(stat -c %s \"$D/usr/lib/$T/libvulkan_freedreno.so\" 2>/dev/null || stat -c %s \"$D/usr/lib/libvulkan_freedreno.so\" 2>/dev/null || echo 0);"
+                            + " rm -f '" + tmpPath + "'; echo \"TAR_RC=$rc_tar\"");
+                }
                 tmp = null;
                 int rc = parseTarRc(out);
                 if (rc != 0) {
@@ -630,6 +644,38 @@ public class HomeFragment extends Fragment {
         } finally {
             conn.disconnect();
         }
+    }
+
+    /**
+     * The Arch asset is an outer tar containing makepkg *.pkg.tar.xz files,
+     * not a rootfs tree. Install those packages with pacman; direct outer-tar
+     * extraction only leaves package files at the root and never creates
+     * /usr/lib/dri/kgsl_dri.so.
+     */
+    private String installArchMesaBundle(String archive, String rootfs) {
+        String stage = rootfs + "/.tuxbox-mesa-stage";
+        String qRoot = shellQuote(rootfs);
+        String qStage = shellQuote(stage);
+        String qArchive = shellQuote(archive);
+        String pacmanCommand = "pacman -U --noconfirm --disable-sandbox /.tuxbox-mesa-stage/*.pkg.tar.xz";
+        String command = "D=" + qRoot + "; rm -rf " + qStage + "; mkdir -p " + qStage + ";"
+                + " tar -xf " + qArchive + " -C " + qStage + " 2>&1; outer_rc=$?;"
+                + " pkg_rc=$outer_rc;"
+                + " if [ \"$outer_rc\" = \"0\" ]; then"
+                + " chroot " + qRoot + " /bin/sh -c " + shellQuote(pacmanCommand) + " 2>&1; pkg_rc=$?;"
+                + " if [ \"$pkg_rc\" != \"0\" ]; then"
+                + " for p in " + qStage + "/*.pkg.tar.xz; do"
+                + " [ -f \"$p\" ] || continue; tar -xJf \"$p\" -C " + qRoot + " 2>&1 || pkg_rc=1;"
+                + " done;"
+                + " if [ -e \"$D/usr/lib/dri/kgsl_dri.so\" ] || [ -e \"$D/usr/lib/libvulkan_freedreno.so\" ]; then pkg_rc=0; fi;"
+                + " fi;"
+                + " fi;"
+                + " if [ \"$pkg_rc\" = \"0\" ]; then chroot " + qRoot + " /sbin/ldconfig 2>/dev/null || chroot " + qRoot + " /usr/bin/ldconfig 2>/dev/null || true; fi;"
+                + " rm -rf " + qStage + "; rm -f " + qArchive + ";"
+                + " T=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo $(uname -m)-linux-gnu);"
+                + " echo TURNIP_LIB=$(stat -c %s \"$D/usr/lib/$T/libvulkan_freedreno.so\" 2>/dev/null || stat -c %s \"$D/usr/lib/libvulkan_freedreno.so\" 2>/dev/null || echo 0);"
+                + " echo \"TAR_RC=$pkg_rc\"";
+        return RootShell.run(command);
     }
 
     /** Fallback para quando a API está inacessível: release conhecido (26.3.0 devel). */

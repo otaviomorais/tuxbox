@@ -1349,6 +1349,12 @@ if [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 19 ]; }; then
 fi
 
 ROOTFS=$(cd "$ROOTFS" && pwd -P)
+# Arch's pacman 7 uses a Landlock download sandbox.  Most Android kernels do
+# not expose Landlock, so make the container's pacman usable automatically.
+_TUXBOX_BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
+if [ -n "$_TUXBOX_BIN_DIR" ] && [ -x "$_TUXBOX_BIN_DIR/ensure-pacman" ]; then
+    "$_TUXBOX_BIN_DIR/ensure-pacman" "$ROOTFS" || true
+fi
 HOSTNAME=$(basename "$ROOTFS" | tr '_' '-')
 
 check_ns() { unshare "$1" true 2>/dev/null; }

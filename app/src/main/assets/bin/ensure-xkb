@@ -40,7 +40,11 @@ elif [ -x "$ROOTFS/usr/bin/yum" ]; then
         installed=1
     fi
 elif [ -x "$ROOTFS/usr/bin/pacman" ]; then
-    if run_logged chroot "$ROOTFS" /usr/bin/pacman -Sy --noconfirm xkeyboard-config; then
+    # Pacman 7's download sandbox needs Landlock, which most Android kernels
+    # do not expose. Try the explicit opt-out first, then older pacman.
+    if run_logged chroot "$ROOTFS" /usr/bin/pacman --disable-sandbox -Sy --noconfirm xkeyboard-config; then
+        installed=1
+    elif run_logged chroot "$ROOTFS" /usr/bin/pacman -Sy --noconfirm xkeyboard-config; then
         installed=1
     fi
 elif [ -x "$ROOTFS/usr/bin/zypper" ]; then

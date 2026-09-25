@@ -1,0 +1,30 @@
+#!/system/bin/sh
+# Make Arch pacman usable on Android kernels without Landlock.
+# Pacman 7 downloads packages in a sandbox by default.  The Android kernel
+# used by TuxBox does not expose Landlock, so the transaction fails before
+# files are committed.  This only changes the download sandbox; package
+# signature verification and normal root privileges remain enabled.
+# Usage: ensure-pacman <rootfs>
+
+ROOTFS="${1:-}"
+[ -n "$ROOTFS" ] || exit 2
+[ -d "$ROOTFS" ] || exit 2
+[ -x "$ROOTFS/usr/bin/pacman" ] || exit 0
+
+CONF="$ROOTFS/etc/pacman.conf"
+[ -f "$CONF" ] || exit 0
+
+# Already explicitly disabled?  Do not touch the user's configuration.
+if grep -q '^[[:space:]]*DisableSandbox[[:space:]]*$' "$CONF" 2>/dev/null; then
+    exit 0
+fi
+
+# Arch's default file contains "#DisableSandbox".  Prefer simply uncommenting
+# that directive; otherwise add it immediately below [options].
+if grep -q '^[[:space:]]*#[[:space:]]*DisableSandbox[[:space:]]*$' "$CONF" 2>/dev/null; then
+    sed -i 's/^[[:space:]]*#[[:space:]]*DisableSandbox[[:space:]]*$/DisableSandbox/' "$CONF" 2>/dev/null || true
+elif grep -q '^\[options\]' "$CONF" 2>/dev/null; then
+    sed -i '/^\[options\]/a DisableSandbox' "$CONF" 2>/dev/null || true
+fi
+
+exit 0

@@ -48,7 +48,7 @@ public final class AssetInstaller {
         return new File(binDir(ctx), "ptyd");
     }
 
-    /** Extract ptyd (matching device ABI) plus the three shell scripts into binDir. */
+    /** Extract ptyd (matching device ABI) plus the shell scripts into binDir. */
     public static void install(Context ctx) throws Exception {
         String abi = abiDir();
         if (abi == null) throw new IllegalStateException("ABI não suportada: " + String.join(",", android.os.Build.SUPPORTED_ABIS));
@@ -59,6 +59,7 @@ public final class AssetInstaller {
             installAtomically(ctx, "bin/tuxbox-mini", new File(binDir, "tuxbox-mini"));
             installAtomically(ctx, "bin/getroot", new File(binDir, "getroot"));
             installAtomically(ctx, "bin/ensure-xkb", new File(binDir, "ensure-xkb"));
+            installAtomically(ctx, "bin/ensure-pacman", new File(binDir, "ensure-pacman"));
             installAtomically(ctx, "ptyd/" + abi + "/ptyd", ptydPath(ctx));
         }
     }
