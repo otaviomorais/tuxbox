@@ -1,7 +1,10 @@
 package sh.tuxbox.root.ui;
 
+import android.content.Context;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -57,6 +60,9 @@ public class DownloadFragment extends Fragment {
 
     private static final String INDEX_URL = "https://images.linuxcontainers.org/meta/1.0/index-system";
     private static final String IMAGES_BASE = "https://images.linuxcontainers.org";
+    private static final String KEY_DISTRO = "selected_distro";
+    private static final String KEY_RELEASE = "selected_release";
+    private static final String KEY_NAME = "container_name";
 
     private Spinner spinnerDistro, spinnerRelease;
     private TextView tvArch, tvProgress;
@@ -69,8 +75,28 @@ public class DownloadFragment extends Fragment {
     private String arch = ""; // e.g. arm64
     private String lastRootfsSize = "";
     private String lastRootfsUrl = "";
+    private String selectedDistro;
+    private String selectedRelease;
 
     private ActivityResultLauncher<String[]> importLauncher;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private Context appContext;
+    private Uri pendingImportUri;
+    private int operationGeneration = 0;
+    private int indexGeneration = 0;
+
+    @Override
+    public void onAttach(@NonNull Context context) {
+        super.onAttach(context);
+        appContext = context.getApplicationContext();
+    }
+
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        importLauncher = registerForActivityResult(
+                new ActivityResultContracts.OpenDocument(), this::importRootfs);
+    }
 
     @Nullable
     @Override
@@ -90,11 +116,15 @@ public class DownloadFragment extends Fragment {
         btnImport = view.findViewById(R.id.btnImport);
         progress = view.findViewById(R.id.progress);
         editName = view.findViewById(R.id.editName);
+        if (savedInstanceState != null) {
+            selectedDistro = savedInstanceState.getString(KEY_DISTRO);
+            selectedRelease = savedInstanceState.getString(KEY_RELEASE);
+            String savedName = savedInstanceState.getString(KEY_NAME);
+            if (savedName != null) editName.setText(savedName);
+        }
 
         arch = deviceArch();
         tvArch.setText(getString(R.string.dl_arch) + ": " + arch);
-
-        importLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::importRootfs);
 
         btnImport.setOnClickListener(v -> importLauncher.launch(new String[]{"application/x-xz", "application/x-tar", "*/*"}));
 
@@ -102,12 +132,18 @@ public class DownloadFragment extends Fragment {
         spinnerDistro.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(android.widget.AdapterView<?> parent, View v, int position, long id) {
+                if (position >= 0 && position < distros.size()) selectedDistro = distros.get(position);
                 populateReleaseSpinner();
             }
             @Override
             public void onNothingSelected(android.widget.AdapterView<?> parent) { }
         });
 
+        if (pendingImportUri != null) {
+            Uri uri = pendingImportUri;
+            pendingImportUri = null;
+            importRootfs(uri);
+        }
         refreshIndex();
     }
 
@@ -125,20 +161,41 @@ public class DownloadFragment extends Fragment {
         return "arm64";
     }
 
+    private void postIndexToUi(int generation, @NonNull Runnable action) {
+        mainHandler.post(() -> {
+            if (generation == indexGeneration && isAdded() && getView() != null) {
+                action.run();
+            }
+        });
+    }
+
+    private void postToUi(int generation, @NonNull Runnable action) {
+        mainHandler.post(() -> {
+            if (generation == operationGeneration && isAdded() && getView() != null) {
+                action.run();
+            }
+        });
+    }
+
     private void refreshIndex() {
+        final int generation = ++indexGeneration;
         tvProgress.setText(R.string.dl_fetch_index);
         progress.setIndeterminate(true);
         progress.setVisibility(View.VISIBLE);
         new Thread(() -> {
             try {
                 fetchIndex();
-                requireActivity().runOnUiThread(() -> {
+                postIndexToUi(generation, () -> {
                     spinnerDistro.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, distros));
+                    if (selectedDistro != null) {
+                        int distroIndex = distros.indexOf(selectedDistro);
+                        if (distroIndex >= 0) spinnerDistro.setSelection(distroIndex);
+                    }
                     tvProgress.setText(R.string.dl_progress);
                     progress.setVisibility(View.GONE);
                 });
             } catch (Exception e) {
-                requireActivity().runOnUiThread(() -> {
+                postIndexToUi(generation, () -> {
                     tvProgress.setText(getString(R.string.dl_err, e.getMessage()));
                     progress.setVisibility(View.GONE);
                 });
@@ -198,11 +255,13 @@ public class DownloadFragment extends Fragment {
         String distro = spinnerDistro.getSelectedItem().toString();
         List<String> rels = releasesByDistro.get(distro);
         if (rels == null || rels.isEmpty()) {
+            selectedRelease = null;
             spinnerRelease.setAdapter(null);
             return;
         }
         int selected = 0;
-        String prev = spinnerRelease.getSelectedItem() == null ? null : spinnerRelease.getSelectedItem().toString();
+        String prev = selectedRelease != null ? selectedRelease
+                : (spinnerRelease.getSelectedItem() == null ? null : spinnerRelease.getSelectedItem().toString());
         spinnerRelease.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, rels));
         if (prev != null) {
             int idx = rels.indexOf(prev);
@@ -218,12 +277,21 @@ public class DownloadFragment extends Fragment {
             }
         }
         spinnerRelease.setSelection(selected);
+        if (selected >= 0 && selected < rels.size()) selectedRelease = rels.get(selected);
     }
 
     private void startDownload() {
         if (spinnerDistro.getSelectedItem() == null || spinnerRelease.getSelectedItem() == null) return;
-        String distro = spinnerDistro.getSelectedItem().toString();
-        String release = spinnerRelease.getSelectedItem().toString();
+        final String distro = spinnerDistro.getSelectedItem().toString();
+        final String release = spinnerRelease.getSelectedItem().toString();
+        selectedDistro = distro;
+        selectedRelease = release;
+        final int generation = ++operationGeneration;
+        final Context context = appContext != null ? appContext : requireContext().getApplicationContext();
+        String requestedName = editName.getText() == null ? "" : editName.getText().toString().trim();
+        if (requestedName.isEmpty()) requestedName = distro + (release.isEmpty() ? "" : "-" + release).toLowerCase(Locale.ROOT);
+        final String fname = requestedName.replaceAll("[^a-zA-Z0-9._-]", "-");
+
         btnDownload.setEnabled(false);
         btnImport.setEnabled(false);
         progress.setIndeterminate(false);
@@ -232,43 +300,31 @@ public class DownloadFragment extends Fragment {
 
         new Thread(() -> {
             try {
-                String name = editName.getText() == null ? "" : editName.getText().toString().trim();
-                if (name.isEmpty()) name = distro + (release.isEmpty() ? "" : "-" + release).toLowerCase(Locale.ROOT);
-                // sanitize
-                name = name.replaceAll("[^a-zA-Z0-9._-]", "-");
-                final String fname = name;
-
                 String baseUrl = findImageBase(distro, release);
                 String rootfsUrl = baseUrl + "rootfs.tar.xz";
-
-                File tmp = new File(requireContext().getCacheDir(), "dl-" + System.currentTimeMillis());
+                File tmp = new File(context.getCacheDir(), "dl-" + System.currentTimeMillis());
                 tmp.mkdirs();
                 File tar = new File(tmp, "rootfs.tar.xz");
                 File extractDir = new File(tmp, "rootfs");
 
-                requireActivity().runOnUiThread(() -> tvProgress.setText(getString(R.string.dl_downloading, fname)));
-                download(rootfsUrl, tar);
-
-                requireActivity().runOnUiThread(() -> tvProgress.setText("Extraindo arquivos…"));
-                final int entryCount = extract(tar, extractDir);
-
-                requireActivity().runOnUiThread(() -> tvProgress.setText(R.string.dl_moving));
+                postToUi(generation, () -> tvProgress.setText(getString(R.string.dl_downloading, fname)));
+                download(rootfsUrl, tar, generation);
+                postToUi(generation, () -> tvProgress.setText("Extraindo arquivos…"));
+                extract(tar, extractDir);
+                postToUi(generation, () -> tvProgress.setText(R.string.dl_moving));
                 moveToMnt(fname, extractDir);
-
-                // cleanup
                 deleteRecursive(tmp);
-
-                requireActivity().runOnUiThread(() -> {
+                postToUi(generation, () -> {
                     tvProgress.setText(getString(R.string.dl_done, fname));
                     progress.setVisibility(View.GONE);
                 });
             } catch (Exception e) {
-                requireActivity().runOnUiThread(() -> {
+                postToUi(generation, () -> {
                     tvProgress.setText(getString(R.string.dl_err, e.getMessage()));
                     progress.setVisibility(View.GONE);
                 });
             } finally {
-                requireActivity().runOnUiThread(() -> {
+                postToUi(generation, () -> {
                     btnDownload.setEnabled(true);
                     btnImport.setEnabled(true);
                 });
@@ -301,7 +357,7 @@ public class DownloadFragment extends Fragment {
     }
 
     /** Download with real byte-rate progress on the UI thread. */
-    private void download(String urlString, File dst) throws Exception {
+    private void download(String urlString, File dst, int generation) throws Exception {
         URL url = new URL(urlString);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setConnectTimeout(20000);
@@ -324,7 +380,7 @@ public class DownloadFragment extends Fragment {
                 if (now - lastUi > 150) {
                     lastUi = now;
                     final long fdone = done;
-                    requireActivity().runOnUiThread(() -> {
+                    postToUi(generation, () -> {
                         int pct = total > 0 ? (int) (fdone * 100 / total) : 0;
                         progress.setProgress(pct);
                         tvProgress.setText(String.format(Locale.ROOT, "Baixando… %d%% (%s / %s)", pct, humans(fdone), humans(total)));
@@ -424,6 +480,19 @@ public class DownloadFragment extends Fragment {
 
     private void importRootfs(Uri uri) {
         if (uri == null) return;
+        if (getView() == null) {
+            pendingImportUri = uri;
+            return;
+        }
+        startImportRootfs(uri);
+    }
+
+    private void startImportRootfs(Uri uri) {
+        final int generation = ++operationGeneration;
+        final Context context = appContext != null ? appContext : requireContext().getApplicationContext();
+        String requestedName = editName.getText() == null ? "" : editName.getText().toString().trim();
+        if (requestedName.isEmpty()) requestedName = "importado";
+        final String fname2 = requestedName.replaceAll("[^a-zA-Z0-9._-]", "-");
         btnDownload.setEnabled(false);
         btnImport.setEnabled(false);
         progress.setIndeterminate(true);
@@ -431,17 +500,12 @@ public class DownloadFragment extends Fragment {
         tvProgress.setText("Importando arquivo…");
         new Thread(() -> {
             try {
-                String name = editName.getText() == null ? "" : editName.getText().toString().trim();
-                if (name.isEmpty()) name = "importado";
-                name = name.replaceAll("[^a-zA-Z0-9._-]", "-");
-                final String fname2 = name;
-
-                File tmp = new File(requireContext().getCacheDir(), "imp-" + System.currentTimeMillis());
+                File tmp = new File(context.getCacheDir(), "imp-" + System.currentTimeMillis());
                 tmp.mkdirs();
                 File tar = new File(tmp, "rootfs.tar.xz");
                 File extractDir = new File(tmp, "rootfs");
 
-                try (InputStream in = requireContext().getContentResolver().openInputStream(uri);
+                try (InputStream in = context.getContentResolver().openInputStream(uri);
                      OutputStream out = new BufferedOutputStream(new FileOutputStream(tar))) {
                     if (in == null) throw new IllegalStateException("não foi possível abrir o arquivo");
                     byte[] buf = new byte[65536];
@@ -449,26 +513,44 @@ public class DownloadFragment extends Fragment {
                     while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
                 }
 
-                requireActivity().runOnUiThread(() -> tvProgress.setText("Extraindo arquivos…"));
+                postToUi(generation, () -> tvProgress.setText("Extraindo arquivos…"));
                 extract(tar, extractDir);
                 moveToMnt(fname2, extractDir);
                 deleteRecursive(tmp);
-                requireActivity().runOnUiThread(() -> {
+                postToUi(generation, () -> {
                     tvProgress.setText(getString(R.string.dl_done, fname2));
                     progress.setVisibility(View.GONE);
                 });
             } catch (Exception e) {
-                requireActivity().runOnUiThread(() -> {
+                postToUi(generation, () -> {
                     tvProgress.setText(getString(R.string.dl_err, e.getMessage()));
                     progress.setVisibility(View.GONE);
                 });
             } finally {
-                requireActivity().runOnUiThread(() -> {
+                postToUi(generation, () -> {
                     btnDownload.setEnabled(true);
                     btnImport.setEnabled(true);
                 });
             }
         }).start();
+    }
+
+    @Override
+    public void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (spinnerDistro != null && spinnerDistro.getSelectedItem() != null) {
+            outState.putString(KEY_DISTRO, spinnerDistro.getSelectedItem().toString());
+        } else if (selectedDistro != null) {
+            outState.putString(KEY_DISTRO, selectedDistro);
+        }
+        if (spinnerRelease != null && spinnerRelease.getSelectedItem() != null) {
+            outState.putString(KEY_RELEASE, spinnerRelease.getSelectedItem().toString());
+        } else if (selectedRelease != null) {
+            outState.putString(KEY_RELEASE, selectedRelease);
+        }
+        if (editName != null && editName.getText() != null) {
+            outState.putString(KEY_NAME, editName.getText().toString());
+        }
     }
 
     // ---- helpers ----

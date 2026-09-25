@@ -8,7 +8,12 @@
     <string name="tab_rootfs">Containers</string>
     <string name="tab_terminal">Terminal</string>
     <string name="tab_about">Sobre</string>
+    <string name="panel_title">Painel</string>
     <string name="panel_open_terminal">Abrir Terminal</string>
+    <string name="section_diagnostics">Diagnóstico e GPU</string>
+    <string name="section_containers">Containers</string>
+    <string name="section_download">Baixar / Importar</string>
+    <string name="section_about">Sobre</string>
 
     <!-- home -->
     <string name="home_container_status">STATUS DO CONTAINER</string>

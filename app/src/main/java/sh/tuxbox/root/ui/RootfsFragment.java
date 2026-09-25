@@ -252,9 +252,9 @@ public class RootfsFragment extends Fragment {
             activity.runOnUiThread(() -> {
                 if (getActivity() == activity && getView() != null) {
                     Toast.makeText(activity, getString(R.string.rootfs_delete_ok, name), Toast.LENGTH_SHORT).show();
+                    refresh();
                 }
             });
         });
-        refresh();
     }
 }

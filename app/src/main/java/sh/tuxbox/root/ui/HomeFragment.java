@@ -36,9 +36,12 @@ import sh.tuxbox.root.util.TuxPaths;
 
 public class HomeFragment extends Fragment {
 
+    private static final String KEY_DIAGNOSTICS_EXPANDED = "diagnostics_expanded";
+
     private TextView tvRootStatus, tvLog, tvHeroName, tvHeroStatus, tvHeroGpu;
-    private MaterialButton btnInstall, btnInstallGpu, btnGpuDiag;
-    private View dotHero;
+    private MaterialButton btnInstall, btnInstallGpu, btnGpuDiag, btnDiagnosticsHeader;
+    private View dotHero, diagnosticsContent;
+    private boolean diagnosticsExpanded = false;
 
     /** Nome do container mostrado no cartão hero (alvo do botão de instalar Mesa). */
     private String heroEnv = null;
@@ -57,6 +60,8 @@ public class HomeFragment extends Fragment {
         btnInstall = view.findViewById(R.id.btnInstall);
         btnInstallGpu = view.findViewById(R.id.btnInstallGpu);
         btnGpuDiag = view.findViewById(R.id.btnGpuDiag);
+        btnDiagnosticsHeader = view.findViewById(R.id.btnDiagnosticsHeader);
+        diagnosticsContent = view.findViewById(R.id.diagnosticsContent);
         tvHeroName = view.findViewById(R.id.tvHeroName);
         tvHeroStatus = view.findViewById(R.id.tvHeroStatus);
         tvHeroGpu = view.findViewById(R.id.tvHeroGpu);
@@ -65,6 +70,24 @@ public class HomeFragment extends Fragment {
         btnInstall.setOnClickListener(v -> installBinaries());
         btnInstallGpu.setOnClickListener(v -> installMesa());
         btnGpuDiag.setOnClickListener(v -> gpuDiagnostics());
+        if (savedInstanceState != null) {
+            diagnosticsExpanded = savedInstanceState.getBoolean(KEY_DIAGNOSTICS_EXPANDED, false);
+        }
+        setDiagnosticsExpanded(diagnosticsExpanded);
+        btnDiagnosticsHeader.setOnClickListener(v -> setDiagnosticsExpanded(!diagnosticsExpanded));
+    }
+
+    private void setDiagnosticsExpanded(boolean expanded) {
+        diagnosticsExpanded = expanded;
+        diagnosticsContent.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        btnDiagnosticsHeader.setText(getString(R.string.section_diagnostics)
+                + (expanded ? "  ⌃" : "  ⌄"));
+    }
+
+    @Override
+    public void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean(KEY_DIAGNOSTICS_EXPANDED, diagnosticsExpanded);
     }
 
     @Override
@@ -141,8 +164,8 @@ public class HomeFragment extends Fragment {
                     // chegava depois de o fragment ter sido desfeito — era o
                     // "app quebrou" ao voltar pra lista de containers.
                     if (!isAdded()) return;
-                    requireActivity().runOnUiThread(() -> {
-                        if (isAdded()) renderHero(f, g, m, tp);
+                    runOnUi(() -> {
+                        if (isAdded() && getView() != null) renderHero(f, g, m, tp);
                     });
                 });
     }
@@ -426,13 +449,14 @@ public class HomeFragment extends Fragment {
     }
 
     private void runOnUi(Runnable r) {
-        if (getActivity() == null) return;
-        getActivity().runOnUiThread(r);
+        if (getActivity() == null || getView() == null) return;
+        getActivity().runOnUiThread(() -> {
+            if (isAdded() && getView() != null) r.run();
+        });
     }
 
     private void setMesaStatus(final String s) {
-        if (getActivity() == null) return;
-        getActivity().runOnUiThread(() -> {
+        runOnUi(() -> {
             if (dlgMesaText != null) dlgMesaText.setText(s);
         });
     }
@@ -634,11 +658,11 @@ public class HomeFragment extends Fragment {
     // ---------------------------------------------------------------------
 
     private void log(String s) {
-        requireActivity().runOnUiThread(() -> tvLog.append(s + "\n"));
+        runOnUi(() -> tvLog.append(s + "\n"));
     }
 
     private void setRootStatus(String s, boolean ok) {
-        requireActivity().runOnUiThread(() -> {
+        runOnUi(() -> {
             tvRootStatus.setText(s);
             tvRootStatus.setTextColor(getResources().getColor(ok ? R.color.tux_green : R.color.tux_red));
         });
@@ -661,16 +685,17 @@ public class HomeFragment extends Fragment {
 
     private void installBinaries() {
         btnInstall.setEnabled(false);
+        final android.content.Context appCtx = requireContext().getApplicationContext();
         new Thread(() -> {
             try {
-                AssetInstaller.install(requireContext());
-                String binDir = AssetInstaller.binDir(requireContext()).getAbsolutePath();
+                AssetInstaller.install(appCtx);
+                String binDir = AssetInstaller.binDir(appCtx).getAbsolutePath();
                 RootShell.run("chmod 755 " + binDir + "/tuxbox " + binDir + "/tuxbox-mini " + binDir + "/getroot " + binDir + "/ptyd 2>&1; mkdir -p " + TuxPaths.ROOTFS_BASE);
                 log(getString(R.string.home_installed));
             } catch (Exception e) {
                 log("erro install: " + e);
             } finally {
-                requireActivity().runOnUiThread(() -> btnInstall.setEnabled(true));
+                runOnUi(() -> btnInstall.setEnabled(true));
             }
         }).start();
     }
