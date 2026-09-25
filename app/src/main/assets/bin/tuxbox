@@ -492,16 +492,12 @@ if [ "${PHASE2:-}" = "1" ]; then
                 setenforce 0 2>/dev/null || true
             fi
             bootinfo "X11: bloco --gui iniciado (apk=$_tx11_apk)"
-            # v3.9 — UM unico servidor X compartilhado entre TODAS as abas do
-            # mesmo rootfs (multi-container). O scratch do servidor vive num
-            # diretorio FIXO dentro do rootfs ($ROOTFS/var/lib/tuxbox-x11, que
-            # dentro do container e' /var/lib/tuxbox-x11): disk-backed, entao
-            # TODAS as abas desse rootfs veem o MESMO socket. Cada aba expoe via
-            # SYMLINK /tmp/.X11-unix/X0 -> /var/lib/tuxbox-x11/.X11-unix/X0.
-            # (Bind mounts foram testados e FALHAM neste SELinux — o v3.8 provou
-            # com "AVISO bind FALHOU"; symlink era o mecanismo do v3.4 que
-            # sempre funcionou.) Abrir outra aba nunca mata o servidor — so
-            # "conecta" nele.
+            # v3.41 — UM unico servidor X compartilhado entre abas e rootfs.
+            # O primeiro container cria o socket em
+            # $ROOTFS/var/lib/tuxbox-x11; os seguintes fazem bind do diretorio
+            # dono em /var/lib/tuxbox-x11-shared e expondo o mesmo socket por
+            # /tmp/.X11-unix/X0. Se o SELinux negar o bind, a sessao avisa e
+            # mantém o fallback takeover — nunca mata o servidor alheio.
             _SR="var/lib/tuxbox-x11"
             _SRV="$ROOTFS/$_SR"
             # v3.11 — CORREÇÃO do erro "can't create /data/local/tuxbox/x11/lock:
@@ -643,13 +639,10 @@ if [ "${PHASE2:-}" = "1" ]; then
                     _x11_wait 60 || true
                 fi
             fi
-            # Publica o socket no /tmp do container: SYMLINK (bind mounts falham no
-            # SELinux aqui — provado no v3.8). /tmp e' tmpfs POR ABA; o alvo
-            # /var/lib/tuxbox-x11/... e' disk-backed e visivel em TODAS as abas
-            # do mesmo rootfs. NOTA (v3.9b): pre-pivot o alvo absoluto NAO
-            # resolve no host — /var/lib/... so' existe DENTRO do container —
-            # entao a validacao usa o par (socket real em _SRV + symlink
-            # presente em $ROOTFS/tmp), nunca resolve o alvo aqui.
+            # Publica o socket no /tmp do container. Abas do mesmo rootfs
+            # usam symlink para o scratch disk-backed; rootfs diferentes
+            # reutilizam o diretorio do dono por bind em /var/lib e tambem
+            # expõem o socket por /tmp/.X11-unix/X0.
             _SOCK=
             if [ "$_x11_shared" = "1" ]; then
                 _SOCK="var/lib/tuxbox-x11-shared/$_x11_shared_sock"
@@ -673,7 +666,7 @@ if [ "${PHASE2:-}" = "1" ]; then
             # por flock + re-check). Singleton por lockdir+pid em var/lock.
             _x11_wd_pid=
             if [ "${_x11_shared:-0}" != "1" ]; then
-            _x11_wd_ver="3.9"
+            _x11_wd_ver="3.10"
             # v3.16 — lockdir do watchdog saiu de $ROOTFS/var/lock: em imagem
             # nova (Debian/usrmerge) /var/lock e' SYMLINK para /run/lock — path
             # ABSOLUTO que, pre-pivot, resolve no HOST e da ENOENT. O `mkdir -p`
@@ -709,7 +702,7 @@ if [ "${PHASE2:-}" = "1" ]; then
             if [ -n "$_x11_wd_lock" ]; then
                 cat > "$ROOTFS/usr/local/bin/x11-watchdog" <<'EOF'
 #!/system/bin/sh
-# tuxbox x11 watchdog v3.9 — servidor X COMPARTILHADO entre abas/containers.
+# tuxbox x11 watchdog v3.10 — servidor X COMPARTILHADO entre abas/containers.
 # O scratch do servidor vive dentro do rootfs (TX11_TMP = $ROOTFS/var/lib/
 # tuxbox-x11, visivel como /var/lib/tuxbox-x11 em TODO container do mesmo
 # rootfs); monitoramos o listener real em /proc/net/unix. Restore serializado
@@ -734,9 +727,10 @@ _wd_alive() { # singleton validado: pid vivo E e' mesmo o watchdog
 if _wd_alive; then
     exit 0
 fi
+_fail=0
 mkdir -p "$TX11_LOCK" 2>/dev/null || exit 0
 echo $$ > "$TX11_LOCK/pid" 2>/dev/null || exit 0
-echo "3.9" > "$TX11_LOCK/ver" 2>/dev/null || true
+echo "3.10" > "$TX11_LOCK/ver" 2>/dev/null || true
 trap 'rm -rf "$TX11_LOCK"' EXIT 2>/dev/null || true
 mkdir -p "$TX11_RUNTIME" "$TX11_CRUNTIME" "$TX11_TMP/.X11-unix" 2>/dev/null || true
 echo "[wd $(date +%H:%M:%S)] start pid=$$ tmp=$TX11_TMP"
@@ -748,6 +742,7 @@ while :; do
     _listen "$TX11_TMP/.X11-unix/X0" && _lB=1
     if [ "$_lA" = "1" ] || [ "$_lB" = "1" ]; then
         # servidor vivo (ALGUEM escuta de verdade) — o symlink ja o expoe.
+        _fail=0
         _n=$((_n + 1))
         if [ $((_n % 10)) -eq 0 ]; then
             echo "[wd $(date +%H:%M:%S)] saude ok lA=$_lA lB=$_lB" \
@@ -787,8 +782,18 @@ while :; do
           done
           echo "[wd $(date +%H:%M:%S)] restaurado (wait=$_i lA=$(_listen "$TX11_TMP/xvfb.sock" && echo 1 || echo 0) lB=$(_listen "$TX11_TMP/.X11-unix/X0" && echo 1 || echo 0))" \
               | tee -a "$TX11_TMP/wd-state"
-          am start --user 0 -n com.termux.x11/com.termux.x11.MainActivity >/dev/null 2>&1 || true
+          # v3.42 — NÃO reacende o app Termux:X11 em cada restore. O
+          # watchdog restaura apenas o socket; a Activity é aberta uma vez no
+          # boot do --gui. Reabrir o app repetidamente criava o loop visível.
         ) 9>"$TX11_XS_LOCK" 2>/dev/null || true
+        if _listen "$TX11_TMP/xvfb.sock" || _listen "$TX11_TMP/.X11-unix/X0"; then
+            _fail=0
+        else
+            _fail=$((_fail + 1))
+            echo "[wd $(date +%H:%M:%S)] restore falhou ${_fail}/3; watchdog vai parar" \
+                | tee -a "$TX11_TMP/wd-state"
+            [ "$_fail" -ge 3 ] && exit 0
+        fi
     fi
     echo "$(date +%s)" > "$TX11_LOCK/heartbeat" 2>/dev/null || true
     sleep 1
@@ -808,7 +813,7 @@ EOF
                 sleep 0.3
                 if [ -r "$_x11_wd_lock/pid" ]; then
                     _x11_wd_pid="$(cat "$_x11_wd_lock/pid" 2>/dev/null)"
-                    bootinfo "X11: watchdog v3.9 ativo (pid $_x11_wd_pid): servidor compartilhado reinicia sozinho se cair"
+                    bootinfo "X11: watchdog v3.10 ativo (pid $_x11_wd_pid): servidor compartilhado reinicia sozinho se cair"
                 else
                     echo "[tuxbox] X11: AVISO: watchdog nao subiu (lock ausente)" >&2
                 fi
