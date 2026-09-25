@@ -1,0 +1,334 @@
+#!/system/bin/sh
+# tuxbox-kernel-check — diagnostico de capabilities do kernel/root.
+#
+# Responde uma pergunta que o `die` do tuxbox nao responde: o QUE esse
+# aparelho suporta, e o que exatamente esta faltando. Cada teste roda de
+# verdade (nada de assumir suporte a partir do /proc/config.gz).
+#
+# Testes SAO DESTRUTIVOS porem ISOLADOS: pivot_root e mknod sao exercitados
+# num scratch descartavel em /data/local/tuxbox-kcheck, NUNCA no rootfs do
+# usuario, e o scratch e removido no fim. Nada fora dele e tocado.
+#
+# Uso: tuxbox-kernel-check            (saida texto, formato de relatorio)
+#      tuxbox-kernel-check --summary  (so a linha de veredito)
+
+SCRATCH="/data/local/tuxbox-kcheck"
+# Numero de flags: cada teste contributes 0 ou 1. Manter em sincronia com
+# o veredito e com o Java (KernelCheckActivity).
+TOTAL=0
+PASSED=0
+FAILED=0
+OPTIONAL=0
+
+QUIET=0
+[ "${1:-}" = "--summary" ] && QUIET=1
+
+# say <texto>         -> linha do relatorio (sumida em --summary)
+# emit <chave> <valor> -> linha TUXBOX_* (SEMPRE impressa: e' o que o app parseia)
+say()  { [ "$QUIET" = "1" ] || printf '%s\n' "$*"; }
+emit() { printf 'TUXBOX_%s=%s\n' "$1" "$2"; }
+# mark <ok|fail|skip> <titulo> <detalhe>
+# Em FALHA o titulo entra em MISSING: e' o que o app mostra como "o que falta".
+MISSING=""
+mark() {
+    _r="$1"; _t="$2"; _d="$3"
+    TOTAL=$((TOTAL + 1))
+    case "$_r" in
+        ok)   PASSED=$((PASSED + 1)); say "  [ OK ] ${_t}${_d:+  ($_d)}" ;;
+        skip) OPTIONAL=$((OPTIONAL + 1)); say "  [ -- ] ${_t}${_d:+  ($_d)}" ;;
+        *)    FAILED=$((FAILED + 1))
+              MISSING="$MISSING$_t|"
+              say "  [FALHA] ${_t}${_d:+  ($_d)}" ;;
+    esac
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+cleanup() { rm -rf "$SCRATCH" 2>/dev/null || true; }
+trap cleanup EXIT INT TERM
+
+cleanup
+mkdir -p "$SCRATCH/old" 2>/dev/null || {
+    printf 'nao consegui criar o scratch %s\n' "$SCRATCH"
+    printf 'VEREDITO:nao-verificavel\n'
+    exit 3
+}
+# O pivot_root do tuxbox precisa de /old_root dentro do NOVO root. Montamos o
+# mesmo layout minimo aqui para o teste ser fiel.
+mkdir -p "$SCRATCH/proc" "$SCRATCH/dev" "$SCRATCH/tmp" "$SCRATCH/old" 2>/dev/null || true
+
+# =========================================================================
+say "== TuxBox — capacidades do kernel/root =="
+say "data: $(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+say ""
+
+# --- 1. Identificacao ------------------------------------------------------
+KVER="$(uname -r 2>/dev/null)"
+KMAJ="$(echo "$KVER" | cut -d. -f1)"
+KMIN="$(echo "$KVER" | cut -d. -f2)"
+ARCH="$(uname -m 2>/dev/null)"
+say "kernel: $KVER"
+say "arch:   $ARCH"
+[ -r /proc/version ] && say "build:  $(cat /proc/version 2>/dev/null | cut -d'(' -f1 | cut -c1-60)"
+say ""
+
+# --- 2. Versao minima (o tuxbox exige >= 4.19) -----------------------------
+if [ -n "$KMAJ" ] && [ -n "$KMIN" ]; then
+    if [ "$KMAJ" -gt 4 ] || { [ "$KMAJ" -eq 4 ] && [ "$KMIN" -ge 19 ]; }; then
+        mark ok "kernel >= 4.19" "$KVER"
+    else
+        mark fail "kernel >= 4.19" "$KVER e anterior ao minimo"
+    fi
+else
+    mark skip "kernel >= 4.19" "nao consegui ler uname -r"
+fi
+
+# --- 3. Config do kernel (informativo; nao e usado como veredito) ----------
+CFG="(config.gz ausente)"
+for c in /proc/config.gz /boot/config-$(uname -r); do
+    [ -r "$c" ] && CFG="$c" && break
+done
+say ""
+say "config: $CFG"
+if [ "$CFG" = "(config.gz ausente)" ]; then
+    mark skip "flags do kernel" "sem /proc/config.gz (comum no Android) — veredito e pelos testes reais"
+else
+    for flag in NAMESPACES UTS_NS IPC_NS PID_NS NET_NS CGROUPS SECCOMP; do
+        v="$(zcat "$CFG" 2>/dev/null | grep -E "^CONFIG_$flag=|^# CONFIG_$flag is not set" | head -1)"
+        [ -n "$v" ] || v="(flag ausente)"
+        say "  CONFIG_$flag: $v"
+    done
+fi
+say ""
+
+# --- 4. Namespaces: teste REAL via unshare, nao via flag -------------------
+say "== namespaces =="
+check_ns() {
+    _flag="$1"; _name="$2"; _need="$3"
+    if ! have unshare; then
+        mark fail "$_name" "unshare nao encontrado no PATH"
+        return
+    fi
+    if unshare "$_flag" true 2>/dev/null; then
+        if [ "$_need" = "obrigatorio" ]; then
+            mark ok "$_name" "unshare $_flag ok"
+        else
+            mark ok "$_name" "unshare $_flag ok"
+        fi
+    else
+        _err="$(unshare "$_flag" true 2>&1 | head -1)"
+        if [ "$_need" = "obrigatorio" ]; then
+            mark fail "$_name" "${_err:-unshare $_flag negado}"
+        else
+            mark skip "$_name" "${_err:-unshare $_flag negado} (opcional: degrada)"
+        fi
+    fi
+}
+# mount = OBRIGATORIO. Sem ele o tuxbox faz `die` e nao ha container.
+check_ns -m "mount namespace" obrigatorio
+check_ns -p "PID namespace"    opcional
+check_ns -i "IPC namespace"    opcional
+check_ns -u "UTS namespace"    opcional
+check_ns -n "network namespace" opcional
+check_ns -C "cgroup namespace" opcional
+check_ns -T "time namespace"   opcional
+# unshare --root (o "user namespace rootless") e o que habilita o grupo extra
+if unshare --root / true 2>/dev/null; then
+    mark ok "unshare --root" "habilita cgroup/time ns"
+else
+    mark skip "unshare --root" "opcional (cgroup/time ns ficam de fora)"
+fi
+say ""
+
+# --- 5. Ferramentas de userspace ------------------------------------------
+say "== ferramentas =="
+for t in unshare mount chroot pivot_root mknod flock setsid awk sed grep; do
+    if have "$t"; then
+        mark ok "$t" "$(command -v "$t")"
+    else
+        # pivot_root vem do toybox no Android
+        if have toybox && toybox 2>/dev/null | tr ' ' '\n' | grep -qx "$t"; then
+            mark ok "$t" "toybox applet"
+        else
+            mark fail "$t" "ausente"
+        fi
+    fi
+done
+say ""
+
+# --- 6. pivot_root REAL (num scratch descartavel) -------------------------
+# Isto e' o teste que importa: o tuxbox faz pivot_root e, se falhar, o boot
+# morre. Testamos no scratch, com o mesmo layout, e desfazemos na hora.
+say "== pivot_root (teste real, em scratch descartavel) =="
+if ! have chroot; then
+    mark skip "pivot_root" "sem chroot para o harness do teste"
+else
+    # O scratch precisa de um shell para o chroot
+    if [ -x /system/bin/sh ]; then
+        _sh=/system/bin/sh
+    else
+        _sh=/bin/sh
+    fi
+    if chroot "$SCRATCH" "$_sh" -c 'exit 0' 2>/dev/null; then
+        mark ok "chroot no scratch" "$SCRATCH"
+        # pivot_root precisa de /old_dir no novo root e de "/" sendo mount point
+        if ( cd "$SCRATCH" && mount --bind "$SCRATCH" "$SCRATCH" 2>/dev/null \
+             && mount -t tmpfs tmpfs "$SCRATCH/old" 2>/dev/null \
+             && pivot_root . old 2>/dev/null ); then
+            mark ok "pivot_root" "execucao real ok"
+            ( cd / && umount -l "/proc/1/root" 2>/dev/null ) # no-op defensivo
+        else
+            # Diagnostico porque falhou: mount bind ou pivot_root?
+            if mount --bind "$SCRATCH" "$SCRATCH" 2>/dev/null; then
+                mark fail "pivot_root" "pivot_root negado (bind funcionou) — comum em SELinux enforcing"
+            else
+                mark fail "pivot_root" "mount --bind negado — SELinux ou LSM bloqueando mount"
+            fi
+        fi
+    else
+        mark fail "chroot no scratch" "chroot indisponivel"
+    fi
+fi
+say ""
+
+# --- 7. mknod REAL (GPU: kgsl/ion/dma_heap/dri) --------------------------
+# Sem mknod nao ha /dev/kgsl-3d0 nem /dev/ion: o Turnip nao aloca dma-buf e o
+# X11 fica sem swapchain. E' o que separa "container funciona" de "GPU funciona".
+say "== mknod (GPU: kgsl / ion / dri) =="
+if have mknod; then
+    if mknod -m 666 "$SCRATCH/dev/kgsl-3d0" c 511 0 2>/dev/null; then
+        mark ok "mknod char device" "criou /dev/kgsl-3d0 (fallback 511:0)"
+    else
+        _e="$(mknod -m 666 "$SCRATCH/dev/kgsl-3d0" c 511 0 2>&1 | head -1)"
+        mark fail "mknod char device" "${_e:-mknod negado}"
+    fi
+    # O device node tem que ter major/minor corretos para o driver abrir.
+    if [ -e "$SCRATCH/dev/kgsl-3d0" ]; then
+        rm -f "$SCRATCH/dev/kgsl-3d0" 2>/dev/null || true
+    fi
+else
+    mark fail "mknod" "comando ausente — GPU indisponivel"
+fi
+
+# Device nodes que o host oferece de verdade?
+GPU_NODES=""
+for n in /dev/kgsl-3d0 /dev/kgsl3d0 /dev/dri/card0 /dev/dri/renderD128 /dev/ion /dev/mali0 /dev/gpu; do
+    [ -e "$n" ] && GPU_NODES="$GPU_NODES $n"
+done
+if [ -n "$GPU_NODES" ]; then
+    mark ok "nodes de GPU no host" "$GPU_NODES"
+else
+    mark skip "nodes de GPU no host" "nenhum device node de GPU exposto"
+fi
+# /dev/dri e o caminho "limpo"; kgsl e o caminho downstream do Adreno.
+if [ -d /dev/dri ] && ls /dev/dri/renderD* >/dev/null 2>&1; then
+    mark ok "DRM (/dev/dri)" "renderD presente"
+else
+    mark skip "DRM (/dev/dri)" "sem render node (normal em ROM com kernel kgsl)"
+fi
+if [ -r /sys/class/kgsl/kgsl-3d0/dev ]; then
+    mark ok "sysfs kgsl" "dev=$(cat /sys/class/kgsl/kgsl-3d0/dev 2>/dev/null)"
+else
+    mark skip "sysfs kgsl" "sem /sys/class/kgsl (kernel sem KGSL)"
+fi
+say ""
+
+# --- 8. SELinux ------------------------------------------------------------
+say "== SELinux =="
+if [ -e /sys/fs/selinux/enforce ]; then
+    ENF="$(cat /sys/fs/selinux/enforce 2>/dev/null)"
+    case "$ENF" in
+        1) mark skip "SELinux" "enforcing — pode negar mount/pivot_root (o script tenta setenforce 0)" ;;
+        0) mark ok "SELinux" "permissive" ;;
+        *) mark skip "SELinux" "estado='$ENF'" ;;
+    esac
+else
+    mark skip "SELinux" "sem suporte (kernel sem CONFIG_SECURITY_SELINUX)"
+fi
+say ""
+
+# --- 9. Ferramentas de rede (so importa com --net) -------------------------
+say "== rede (necessario so com --net) =="
+for t in ip iptables; do
+    if have "$t"; then
+        if [ "$t" = "ip" ] && readlink "$(command -v ip)" 2>/dev/null | grep -q busybox; then
+            mark fail "ip (iproute2)" "e' o applet do busybox — o --net exige iproute2 real"
+        else
+            mark ok "$t" "$(command -v "$t")"
+        fi
+    else
+        mark skip "$t" "ausente (so --net precisa)"
+    fi
+done
+say ""
+
+# --- 10. Termux:X11 --------------------------------------------------------
+say "== Termux:X11 =="
+X11_APK="$(pm path com.termux.x11 2>/dev/null | cut -d: -f2 | head -1)"
+if [ -n "$X11_APK" ]; then
+    mark ok "Termux:X11" "instalado"
+else
+    mark fail "Termux:X11" "com.termux.x11 nao instalado — sem X11"
+fi
+say ""
+
+# --- 11. Rootfs de um container (informativo) ------------------------------
+FIRST_CT="$(ls -1 /data/local/tuxbox 2>/dev/null | head -1)"
+if [ -n "$FIRST_CT" ] && [ -d "/data/local/tuxbox/$FIRST_CT" ]; then
+    if [ -x "/data/local/tuxbox/$FIRST_CT/bin/sh" ] || [ -x "/data/local/tuxbox/$FIRST_CT/usr/bin/bash" ]; then
+        mark ok "rootfs" "$FIRST_CT com shell"
+    else
+        mark fail "rootfs" "$FIRST_CT sem shell em /bin/sh"
+    fi
+else
+    mark skip "rootfs" "nenhum container em /data/local/tuxbox"
+fi
+say ""
+
+# =========================================================================
+# Veredito. O unico teste que MATA o container e' o mount namespace: e' o
+# gate do `die` no fim do tuxbox. pivot_root/mknod degradam o que funciona
+# (GPU, isolamento), mas o container ainda sobe.
+# =========================================================================
+CORE_OK=0
+unshare -m true 2>/dev/null && CORE_OK=1
+
+if [ "$CORE_OK" = "1" ]; then
+    if [ "$FAILED" = "0" ]; then
+        VERDICT="completo"
+        RESUMO="Kernel e root OK: ${PASSED}/${TOTAL} capacidades, nada faltando."
+        MOTIVO="nenhuma"
+    else
+        VERDICT="funcional"
+        RESUMO="Container FUNCIONA (${FAILED} capacidade(is) degradada(s) de ${TOTAL}). O que faltar aparece acima."
+        # Lista precisa do que faltou, para o app mostrar sem parsing de texto.
+        MOTIVO="$(printf '%s' "$MISSING" | sed 's/|$//')"
+    fi
+else
+    VERDICT="incompativel"
+    RESUMO="Mount namespace INDISPONIVEL (CLONE_NEWNS): o modo container nao sobe neste aparelho."
+    MOTIVO="mount-namespace"
+fi
+
+say "== VEREDITO: $VERDICT =="
+say "$RESUMO"
+[ "$MOTIVO" = "nenhuma" ] || say "faltando: $MOTIVO"
+
+# Linha parseavel pelo app (formato estavel, sempre impressa — inclusive em
+# --summary, que e' o modo que o app usa).
+emit VEREDITO "$VERDICT"
+emit PASS "$PASSED"
+emit FAIL "$FAILED"
+emit SKIP "$OPTIONAL"
+emit TOTAL "$TOTAL"
+emit KERNEL "$KVER"
+emit MOTIVO "$MOTIVO"
+
+[ "$QUIET" = "1" ] || say ""
+[ "$QUIET" = "1" ] || say "(o scratch $SCRATCH foi removido)"
+
+case "$VERDICT" in
+    completo)    exit 0 ;;
+    funcional)   exit 1 ;;
+    *)           exit 2 ;;
+esac

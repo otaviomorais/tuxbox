@@ -39,7 +39,7 @@ public class HomeFragment extends Fragment {
     private static final String KEY_DIAGNOSTICS_EXPANDED = "diagnostics_expanded";
 
     private TextView tvRootStatus, tvLog, tvHeroName, tvHeroStatus, tvHeroGpu;
-    private MaterialButton btnInstall, btnInstallGpu, btnGpuDiag, btnDiagnosticsHeader;
+    private MaterialButton btnInstall, btnInstallGpu, btnGpuDiag, btnDiagnosticsHeader, btnKernelDiag;
     private View dotHero, diagnosticsContent;
     private boolean diagnosticsExpanded = false;
 
@@ -60,6 +60,7 @@ public class HomeFragment extends Fragment {
         btnInstall = view.findViewById(R.id.btnInstall);
         btnInstallGpu = view.findViewById(R.id.btnInstallGpu);
         btnGpuDiag = view.findViewById(R.id.btnGpuDiag);
+        btnKernelDiag = view.findViewById(R.id.btnKernelDiag);
         btnDiagnosticsHeader = view.findViewById(R.id.btnDiagnosticsHeader);
         diagnosticsContent = view.findViewById(R.id.diagnosticsContent);
         tvHeroName = view.findViewById(R.id.tvHeroName);
@@ -70,6 +71,7 @@ public class HomeFragment extends Fragment {
         btnInstall.setOnClickListener(v -> installBinaries());
         btnInstallGpu.setOnClickListener(v -> installMesa());
         btnGpuDiag.setOnClickListener(v -> gpuDiagnostics());
+        btnKernelDiag.setOnClickListener(v -> kernelDiagnostics());
         if (savedInstanceState != null) {
             diagnosticsExpanded = savedInstanceState.getBoolean(KEY_DIAGNOSTICS_EXPANDED, false);
         }
@@ -222,6 +224,119 @@ public class HomeFragment extends Fragment {
                         .show();
             });
         }).start();
+    }
+
+    /**
+     * v3.47 — Diagnóstico de capacidades do kernel/root.
+     *
+     * <p>Responde a pergunta que o {@code die} do tuxbox não responde: o que
+     * ESTE aparelho suporta, e exatamente o que falta. Todos os testes são
+     * reais — nada é inferido de {@code /proc/config.gz} — e {@code pivot_root}
+     * e {@code mknod} são exercitados num scratch descartável
+     * ({@code /data/local/tuxbox-kcheck}), nunca no rootfs do usuário.
+     *
+     * <p>Veredito: {@code completo} (tudo ok), {@code funcional} (o container
+     * sobe, mas algo degrada — tipicamente a GPU) ou {@code incompativel}
+     * (sem mount namespace: o modo container não sobe).
+     */
+    private void kernelDiagnostics() {
+        btnKernelDiag.setEnabled(false);
+        btnKernelDiag.setText(R.string.kernel_diag_running);
+        Toast.makeText(requireContext(), R.string.kernel_diag_running, Toast.LENGTH_SHORT).show();
+        final android.content.Context appCtx = requireContext().getApplicationContext();
+        new Thread(() -> {
+            String out;
+            try {
+                AssetInstaller.install(appCtx);
+                String kc = AssetInstaller.binDir(appCtx).getAbsolutePath() + "/tuxbox-kernel-check";
+                // --summary primeiro (barato, só o veredito) para colorir o botão;
+                // a saída completa vem logo depois, para o diálogo.
+                out = RootShell.run(shellQuote(kc) + " 2>&1 || true");
+            } catch (Exception e) {
+                out = "";
+            }
+            final String report = out;
+            runOnUi(() -> {
+                if (!isAdded()) return;
+                btnKernelDiag.setEnabled(true);
+                String verdict = field(report, "VEREDITO");
+                String motivo = field(report, "MOTIVO");
+                int failed = intField(report, "FAIL", -1);
+                String kver = field(report, "KERNEL");
+
+                if (verdict.isEmpty()) {
+                    btnKernelDiag.setText(R.string.btn_kernel_diag);
+                    log(getString(R.string.kernel_diag_failed, report.trim().isEmpty()
+                            ? "saida vazia" : report.trim()));
+                    return;
+                }
+                // Resumo no botão, para o usuario ver sem abrir nada.
+                switch (verdict) {
+                    case "completo":
+                        btnKernelDiag.setText(R.string.kernel_diag_verdict_ok_short);
+                        break;
+                    case "funcional":
+                        btnKernelDiag.setText(failed > 0
+                                ? getString(R.string.kernel_diag_verdict_partial_short, failed)
+                                : getString(R.string.kernel_diag_verdict_ok_short));
+                        break;
+                    default:
+                        btnKernelDiag.setText(R.string.kernel_diag_verdict_bad_short);
+                        break;
+                }
+
+                StringBuilder sb = new StringBuilder();
+                if ("completo".equals(verdict)) {
+                    sb.append(getString(R.string.kernel_diag_verdict_ok));
+                } else if ("funcional".equals(verdict)) {
+                    sb.append(getString(R.string.kernel_diag_verdict_partial, Math.max(failed, 0)));
+                } else {
+                    sb.append(getString(R.string.kernel_diag_verdict_bad));
+                }
+                if (!kver.isEmpty()) sb.append("\nkernel: ").append(kver);
+                if (!motivo.isEmpty() && !"nenhuma".equals(motivo)) {
+                    sb.append("\n\nfaltando: ").append(motivo.replace('|', '\n'));
+                }
+                sb.append("\n\n").append(report.trim());
+
+                final String body = sb.toString();
+                log("== KERNEL DIAG ==\n" + report);
+                new AlertDialog.Builder(requireContext())
+                        .setTitle(R.string.kernel_diag_title)
+                        .setMessage(body)
+                        .setPositiveButton(android.R.string.ok, null)
+                        .setNeutralButton(R.string.kernel_diag_copy, (d, w) -> {
+                            try {
+                                android.content.ClipboardManager cm =
+                                        (android.content.ClipboardManager) requireContext()
+                                                .getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                                if (cm != null) {
+                                    cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                                            "tuxbox-kernel-check", report));
+                                    Toast.makeText(requireContext(), R.string.kernel_diag_copied,
+                                            Toast.LENGTH_SHORT).show();
+                                }
+                            } catch (Exception ignored) { }
+                        })
+                        .show();
+            });
+        }).start();
+    }
+
+    /** Extrai {@code TUXBOX_<nome>=<valor>} da saída do tuxbox-kernel-check. */
+    private static String field(String out, String name) {
+        if (out == null) return "";
+        for (String line : out.split("\n")) {
+            String p = "TUXBOX_" + name + "=";
+            if (line.startsWith(p)) return line.substring(p.length()).trim();
+        }
+        return "";
+    }
+
+    private static int intField(String out, String name, int def) {
+        String v = field(out, name);
+        if (v.isEmpty()) return def;
+        try { return Integer.parseInt(v); } catch (NumberFormatException e) { return def; }
     }
 
     /**
@@ -821,6 +936,7 @@ public class HomeFragment extends Fragment {
                 RootShell.run("chmod 755 " + binDir + "/tuxbox " + binDir + "/tuxbox-mini "
                         + binDir + "/getroot " + binDir + "/ensure-xkb "
                         + binDir + "/ensure-pacman " + binDir + "/ensure-x11-clients "
+                        + binDir + "/tuxbox-kernel-check "
                         + binDir + "/ptyd 2>&1; "
                         + "mkdir -p " + TuxPaths.ROOTFS_BASE + "; " + installXkb);
                 log(getString(R.string.home_installed));

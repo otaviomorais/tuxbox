@@ -227,6 +227,26 @@
                     app:strokeColor="@color/tux_stroke"
                     app:strokeWidth="1dp" />
 
+                <!-- v3.47: sempre visivel (nao depende de haver GPU). E o botao
+                     que responde "este aparelho roda o TuxBox? e por que nao?". -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnKernelDiag"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:minWidth="0dp"
+                    android:minHeight="0dp"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:text="@string/btn_kernel_diag"
+                    android:textAllCaps="false"
+                    android:textColor="@color/tux_text_secondary"
+                    android:textSize="13sp"
+                    app:backgroundTint="@android:color/transparent"
+                    app:cornerRadius="20dp"
+                    app:strokeColor="@color/tux_stroke"
+                    app:strokeWidth="1dp" />
+
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

@@ -43,6 +43,19 @@
     <string name="btn_gpu_diag">Diagnóstico da GPU</string>
     <string name="gpu_diag_title">Diagnóstico da GPU</string>
     <string name="gpu_diag_running">Coletando informações da GPU…</string>
+    <!-- v3.47: diagnóstico de capacidades do kernel/root -->
+    <string name="btn_kernel_diag">Diagnóstico do kernel</string>
+    <string name="kernel_diag_title">Diagnóstico do kernel</string>
+    <string name="kernel_diag_running">Testando o que o kernel deste aparelho permite…</string>
+    <string name="kernel_diag_copy">Copiar</string>
+    <string name="kernel_diag_copied">Diagnóstico copiado</string>
+    <string name="kernel_diag_verdict_ok">Completo — tudo que o TuxBox precisa está disponível.</string>
+    <string name="kernel_diag_verdict_ok_short">Kernel completo</string>
+    <string name="kernel_diag_verdict_partial">Funcional — o container sobe, mas %1$d capacidade(s) faltam. Toque para ver o que é.</string>
+    <string name="kernel_diag_verdict_partial_short">Funcional (%1$d falta)</string>
+    <string name="kernel_diag_verdict_bad">Incompatível — o modo container não sobe neste aparelho.</string>
+    <string name="kernel_diag_verdict_bad_short">Incompatível</string>
+    <string name="kernel_diag_failed">Não foi possível rodar o diagnóstico: %1$s</string>
     <string name="mesa_title">Instalando Mesa GPU</string>
     <string name="mesa_detect">Detectando distro do container…</string>
     <string name="mesa_dl">Baixando driver Mesa…</string>
