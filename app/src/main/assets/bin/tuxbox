@@ -483,29 +483,26 @@ if [ "${PHASE2:-}" = "1" ]; then
             "$_bin_dir/ensure-xkb" "$ROOTFS" || \
                 warn "X11: nao foi possivel instalar xkb-data automaticamente (log: $ROOTFS/var/log/tuxbox-xkb.log)"
         fi
-        # v3.45 — o boot do --gui NUNCA passava pelo ensure-pacman (so os botoes
-        # da Home rodavam), entao /etc/pacman.conf continuava com a SigLevel
-        # estrita e a cadeia de confianca ARM nao estava inicializada. O
-        # ensure-x11-clients copiava esse conf e o pacman REJEITAVA a
-        # assinatura dos pacotes -> a instalacao falhava em silencio e era
-        # preciso digitar o pacman -S na mao. Aqui o conf e' normalizado uma
-        # vez; nas abas seguintes o grep ja acha TrustAll e nao ha custo.
-        if [ -n "$_bin_dir" ] && [ -x "$_bin_dir/ensure-pacman" ]; then
-            grep -q 'TrustAll' "$ROOTFS/etc/pacman.conf" 2>/dev/null || \
-                "$_bin_dir/ensure-pacman" "$ROOTFS" >/dev/null 2>&1 || true
-        fi
-        # v3.43 — Arch: o plugin X11 do vkmark (e de outros graficos) e'
-        # carregado em TEMPO DE EXECUCAO e depende de libxcb/libxcb-icccm, que
-        # no Arch sao dependencia OPCIONAL do pacote. Sem elas o app roda no
-        # Vulkan da GPU mas nao cria janela nenhuma no X11. O helper e' no-op
-        # em qualquer distro que nao seja Arch (sem pacman no rootfs).
+        # v3.46 — o helper NAO roda mais aqui. Em v3.43-3.45 a instalacao era
+        # feita por `chroot $ROOTFS pacman ...` no host, com o conf copiado e um
+        # --cachedir temporario; esse caminho falhava em silencio e o usuario
+        # tinha que digitar o pacman -S na mao. Agora o script e' so COPIADO
+        # para dentro do container (/usr/local/bin/tuxbox-x11-clients) e quem
+        # executa o pacman e' o proprio container, no boot, antes do shell.
         if [ -n "$_bin_dir" ] && [ -x "$_bin_dir/ensure-x11-clients" ]; then
-            _x11c="$("$_bin_dir/ensure-x11-clients" "$ROOTFS" 2>/dev/null | tail -n 1)"
-            case "$_x11c" in
-                ok:*|instalado:*) bootinfo "X11: libs de cliente — $_x11c" ;;
-                skip:*) : ;;   # nao-Arch: silencioso, como antes
-                *) warn "X11: libs de cliente — ${_x11c:-sem resposta} (log: $ROOTFS/var/log/tuxbox-x11-clients.log)" ;;
-            esac
+            if [ -x "$ROOTFS/usr/bin/pacman" ]; then
+                mkdir -p "$ROOTFS/usr/local/bin" 2>/dev/null || true
+                cp "$_bin_dir/ensure-x11-clients" \
+                   "$ROOTFS/usr/local/bin/.tuxbox-x11-clients.new" 2>/dev/null \
+                    && chmod 755 "$ROOTFS/usr/local/bin/.tuxbox-x11-clients.new" 2>/dev/null \
+                    && mv -f "$ROOTFS/usr/local/bin/.tuxbox-x11-clients.new" \
+                           "$ROOTFS/usr/local/bin/tuxbox-x11-clients" 2>/dev/null
+                if [ -x "$ROOTFS/usr/local/bin/tuxbox-x11-clients" ]; then
+                    bootinfo "X11: helper de libs de cliente copiado para o container"
+                else
+                    warn "X11: nao consegui copiar o helper (libs de cliente podem faltar)"
+                fi
+            fi
         fi
         _tx11_ok=0
         _tx11_apk=$(/system/bin/pm path com.termux.x11 2>/dev/null | cut -d: -f2 | head -1 || true)
@@ -1056,15 +1053,38 @@ EOF
         bootinfo "X11: libs de cliente xcb=$_xcb (vkmark/glxgears so' abrem janela com elas)"
     fi
 
+    # v3.46 — Bootstrap do X11 CLIENTE roda DENTRO do container, no primeiro
+    # plano, ANTES do shell aparecer. E' exatamente o comando que funciona
+    # (`pacman -S --needed --noconfirm xcb-util-wm libxcb`), sem chroot, sem
+    # conf copiado e sem --cachedir. Roda so quando falta (depois disso o
+    # helper devolve "ok" em milissegundos e o boot fica igual).
+    X11_BOOTSTRAP=""
+    if [ "${GUI:-0}" = "1" ]; then
+        if [ -x /usr/local/bin/tuxbox-x11-clients ]; then
+            X11_BOOTSTRAP=1
+        else
+            bootinfo "X11: helper de libs de cliente ausente no container"
+        fi
+    fi
+
     # On Termux with tsu, chroot immediately after pivot_root is required
     exec chroot . env -i \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         HOME=/root \
         TERM=xterm-256color \
         container=tuxbox \
+        TUXBOX_X11_BOOTSTRAP="$X11_BOOTSTRAP" \
         $GPU_ENV \
         $X11_ENV \
-        /bin/sh -c 'cd; umount -l /old_root && rmdir /old_root; exec "$@"' -- "$@"
+        /bin/sh -c 'cd; umount -l /old_root && rmdir /old_root
+            if [ -n "${TUXBOX_X11_BOOTSTRAP:-}" ] && [ -x /usr/local/bin/tuxbox-x11-clients ]; then
+                printf "[tuxbox] X11: verificando libs de cliente...\n"
+                # Via /bin/sh e NEVER pelo shebang: o shebang do helper aponta
+                # para /system/bin/sh (shell do Android), que nao existe aqui
+                # dentro do container.
+                /bin/sh /usr/local/bin/tuxbox-x11-clients --in-container || true
+            fi
+            exec "$@"' -- "$@"
 fi
 
 # === Networking functions ===

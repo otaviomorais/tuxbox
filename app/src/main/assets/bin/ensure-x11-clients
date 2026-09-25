@@ -10,37 +10,45 @@
 #     endif
 # No Arch o pacote xcb-util-wm e' dependencia OPCIONAL ("for X11 support"), ou
 # seja, `pacman -S vkmark` instala o plugin mas NAO as libs que ele dlopen().
-# Resultado: o Vulkan roda na GPU (surface headless) e nada aparece no X11 — o
-# benchmark funciona "por fora" e a tela fica vazia. No Debian a pilha X11 entra
-# como dependencia dura, por isso o mesmo comando abre janela la e nao aqui.
+# Resultado: o Vulkan roda na GPU (surface headless) e nada aparece no X11.
 #
-# Modo "full" (botao "Instalar binarios") instala tambem os PROGRAMAS de X11
-# uteis: openbox (gerenciador de janelas, que o tuxbox sobe sozinho se existir),
-# xterm e xorg-xclock (cliente de teste). Cada um e' sondado com `pacman -Si`
-# antes: o repo do container pode ser archlinuxarm e nao ter o mesmo conjunto de
-# pacotes do Arch oficial, entao o que nao existir e' apenas pulado.
+# POR QUE EXECUTAR DENTRO DO CONTAINER (--in-container):
+# v3.43/v3.44 tentavam `chroot $ROOTFS pacman ...` no host, copiando o
+# pacman.conf e sobrescrevendo o --cachedir. Esse caminho falhava em silencio
+# (o --cachedirOverrides owner mudava para root e o DownloadUser=alpm perdia a
+# permissao de escrita) e o usuario tinha que digitar o pacman -S na mao. A
+# correcao e usar o MESMO comando que funciona, sem chroot e sem overrides:
+#     pacman -S --needed --noconfirm xcb-util-wm libxcb
+# dentro do proprio container, com o conf dele. Modo host = copia o script
+# para o rootfs e entra no chroot chamando esse modo.
 #
 # Nao mexe em nenhuma outra distro: sem pacman no rootfs e' no-op.
-# Uso: ensure-x11-clients <rootfs> [minimal|full]
+# Uso:
+#   ensure-x11-clients <rootfs> [minimal|full]      (no host: copia e usa chroot)
+#   ensure-x11-clients --in-container [minimal|full] (ja dentro do container)
 
-ROOTFS="${1:-}"
-MODE="${2:-minimal}"
-[ -n "$ROOTFS" ] || exit 2
-[ -d "$ROOTFS" ] || exit 2
+set -u
+
+MODE="minimal"
+ROOTFS=""
+IN_CONTAINER=0
+
+if [ "${1:-}" = "--in-container" ]; then
+    IN_CONTAINER=1
+    MODE="${2:-minimal}"
+else
+    ROOTFS="${1:-}"
+    MODE="${2:-minimal}"
+fi
+
 case "$MODE" in
     full|minimal) ;;
     *) MODE="minimal" ;;
 esac
 
-# Arch apenas. Qualquer outra distro (Debian/Ubuntu/Alpine/Fedora...) sai intacta.
-[ -x "$ROOTFS/usr/bin/pacman" ] || { echo "skip: nao-arch"; exit 0; }
+LIB_PKGS="xcb-util-wm libxcb"
 
-LOG="$ROOTFS/var/log/tuxbox-x11-clients.log"
-mkdir -p "$ROOTFS/var/log" 2>/dev/null || true
-log() { printf '[x11-clients] %s\n' "$*" >>"$LOG" 2>/dev/null || true; }
-
-# O plugin xcb do vkmark dlopen()a libxcb-icccm e a libxcb; sem elas ele cai
-# no plugin headless. Procura em lib/, usr/lib/ e nos dirs multiarch.
+# Arquivos que provam que as libs criticas ja estao la.
 lib_present() {
     _base="$1"
     for _p in \
@@ -55,49 +63,87 @@ lib_present() {
     return 1
 }
 
-MISSING=""
-lib_present libxcb-icccm.so || MISSING="$MISSING xcb-util-wm"
-lib_present libxcb.so || MISSING="$MISSING libxcb"
+bin_present() {
+    for _b in "$ROOTFS/usr/bin/$1" "$ROOTFS/bin/$1" "$ROOTFS/usr/local/bin/$1"; do
+        [ -x "$_b" ] && return 0
+    done
+    return 1
+}
 
-if [ -z "$MISSING" ]; then
-    log "ok: libxcb + libxcb-icccm presentes (plugin xcb do vkmark carrega)"
-    echo "ok: libs de cliente X11 ja presentes"
+if [ "$IN_CONTAINER" = "0" ]; then
+    # ---------- modo host: instala o script no container e entra nele ----------
+    [ -n "$ROOTFS" ] || { echo "uso: ensure-x11-clients <rootfs> [minimal|full]"; exit 2; }
+    [ -d "$ROOTFS" ] || exit 2
+    # Arch apenas. Qualquer outra distro sai intacta.
+    [ -x "$ROOTFS/usr/bin/pacman" ] || { echo "skip: nao-arch"; exit 0; }
+
+    _self="$0"
+    case "$_self" in
+        /*) : ;;
+        *) _self="$(CDPATH= cd -- "$(dirname -- "$_self")" 2>/dev/null && pwd)/$(basename -- "$_self")" ;;
+    esac
+    [ -r "$_self" ] || { echo "FALHOU: nao achei o proprio script ($_self)"; exit 1; }
+
+    mkdir -p "$ROOTFS/usr/local/bin" 2>/dev/null || {
+        echo "FALHOU: nao consegui criar $ROOTFS/usr/local/bin"; exit 1; }
+    # tmp + mv: nunca executa um arquivo sendo reescrito.
+    cp "$_self" "$ROOTFS/usr/local/bin/.tuxbox-x11-clients.new" 2>/dev/null || {
+        echo "FALHOU: nao consegui copiar o helper para o container"; exit 1; }
+    chmod 755 "$ROOTFS/usr/local/bin/.tuxbox-x11-clients.new" 2>/dev/null || true
+    mv -f "$ROOTFS/usr/local/bin/.tuxbox-x11-clients.new" \
+          "$ROOTFS/usr/local/bin/tuxbox-x11-clients" 2>/dev/null || {
+        echo "FALHOU: nao consegui gravar o helper no container"; exit 1; }
+
+    # Invoca pelo /bin/sh DO CONTAINER, nunca pelo shebang: o shebang deste
+    # arquivo e' #!/system/bin/sh (o shell do Android), que nao existe dentro
+    # do container depois do pivot_root — o script seria "not found".
+    _csh=""
+    for _c in /bin/sh /usr/bin/sh /bin/bash; do
+        if [ -x "$ROOTFS$_c" ]; then _csh="$_c"; break; fi
+    done
+    if [ -z "$_csh" ]; then
+        echo "FALHOU: container sem shell em /bin/sh para rodar o helper"
+        exit 1
+    fi
+    chroot "$ROOTFS" "$_csh" /usr/local/bin/tuxbox-x11-clients --in-container "$MODE"
+    exit $?
+fi
+
+# ---------- modo in-container ----------
+ROOTFS=""
+mkdir -p /var/log 2>/dev/null || true
+LOG="/var/log/tuxbox-x11-clients.log"
+log() { printf '[x11-clients] %s\n' "$*" >>"$LOG" 2>/dev/null || true; }
+
+# Arch apenas (o modo host ja filtrou, mas o boot pode chamar direto).
+if [ ! -x /usr/bin/pacman ]; then
+    echo "skip: nao-arch"
     exit 0
 fi
 
-log "faltando:$MISSING — instalando via pacman"
-missing_in_fs() {
-    lib_present libxcb-icccm.so || lib_present libxcb.so
-}
-
-# pacman 7 exige Landlock no download sandbox, ausente na maioria dos kernels
-# Android. ensure-pacman ja grava DisableSandbox em /etc/pacman.conf; aqui
-# repetimos numa copia porque a sessao GUI pode ter rodado antes dele.
-STAGE="/.tuxbox-x11-pacman"
-HOST_STAGE="$ROOTFS$STAGE"
-rm -rf "$HOST_STAGE" 2>/dev/null || true
-mkdir -p "$HOST_STAGE/.tuxbox-x11-cache" 2>/dev/null || true
-CONF=""
-
-# Mesma politica do ensure-pacman, aplicada na COPIA do conf:
-#  - DisableSandbox: pacman 7 exige Landlock no download, ausente em Android.
-#  - SigLevel ... TrustAll: a cadeia de confianca das chaves ARM so fica
-#    "marginal" no container; sem TrustAll o pacman REJEITA a assinatura dos
-#    pacotes do repo e a instalacao falha. Este era o bug: o boot do --gui nao
-#    passa pelo ensure-pacman, entao o conf ainda tinha a SigLevel estrita.
+# 1) Conf do container, normalizado no lugar (mesma politica do ensure-pacman):
+#    - DisableSandbox: pacman 7 exige Landlock no download, ausente em Android.
+#    - SigLevel ... TrustAll: a cadeia de confianca das chaves ARM fica
+#      "marginal" no container; sem TrustAll o pacman REJEITA a assinatura.
+#    Idempotente: so muda se ainda nao estiver como queremos.
 relax_conf() {
-    _c="$1"
-    if grep -q '^\[options\]' "$_c" 2>/dev/null; then
-        grep -q '^[[:space:]]*DisableSandbox' "$_c" 2>/dev/null || \
-            sed -i '/^\[options\]/a DisableSandbox' "$_c" 2>/dev/null || true
-    else
-        printf '\n[options]\nDisableSandbox\n' >>"$_c" 2>/dev/null || true
+    _c="/etc/pacman.conf"
+    [ -f "$_c" ] || { log "AVISO: /etc/pacman.conf ausente"; return 1; }
+    _changed=0
+    if ! grep -q '^[[:space:]]*DisableSandbox' "$_c" 2>/dev/null; then
+        if grep -q '^\[options\]' "$_c" 2>/dev/null; then
+            sed -i '/^\[options\]/a DisableSandbox' "$_c" 2>/dev/null && _changed=1
+        else
+            printf '\n[options]\nDisableSandbox\n' >>"$_c" 2>/dev/null && _changed=1
+        fi
     fi
     if grep -q '^[[:space:]]*SigLevel[[:space:]]*=' "$_c" 2>/dev/null; then
-        sed -i 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Required DatabaseOptional TrustAll/' \
-            "$_c" 2>/dev/null || true
+        grep -q '^[[:space:]]*SigLevel[[:space:]]*=.*TrustAll' "$_c" 2>/dev/null || {
+            sed -i 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Required DatabaseOptional TrustAll/' \
+                "$_c" 2>/dev/null && _changed=1
+        }
     else
-        printf 'SigLevel = Required DatabaseOptional TrustAll\n' >>"$_c" 2>/dev/null || true
+        printf 'SigLevel = Required DatabaseOptional TrustAll\n' >>"$_c" 2>/dev/null && _changed=1
     fi
     if grep -q '^[[:space:]]*LocalFileSigLevel[[:space:]]*=' "$_c" 2>/dev/null; then
         sed -i 's/^[[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' \
@@ -105,115 +151,86 @@ relax_conf() {
     else
         printf 'LocalFileSigLevel = Optional\n' >>"$_c" 2>/dev/null || true
     fi
+    [ "$_changed" = "1" ] && log "pacman.conf normalizado (DisableSandbox/TrustAll)"
+    return 0
 }
+relax_conf
 
-if [ -f "$ROOTFS/etc/pacman.conf" ] && [ -d "$HOST_STAGE" ]; then
-    cp "$ROOTFS/etc/pacman.conf" "$HOST_STAGE/pacman.conf" 2>/dev/null || true
-    if [ -f "$HOST_STAGE/pacman.conf" ]; then
-        relax_conf "$HOST_STAGE/pacman.conf"
-        CONF="$STAGE/pacman.conf"
-    fi
-else
-    log "AVISO: /etc/pacman.conf ausente — usando o conf padrao do container"
-fi
-
-run_pacman() {
-    chroot "$ROOTFS" /usr/bin/pacman "$@" \
-        --cachedir "$STAGE/.tuxbox-x11-cache" >>"$LOG" 2>&1
-}
-
-# Keyring: o boot do --gui nao passa pelo ensure-pacman, entao o keyring pode
-# nunca ter sido inicializado. Sem GPGDir o pacman aborta antes de baixar.
-if [ ! -d "$ROOTFS/etc/pacman.d/gnupg" ] && [ -x "$ROOTFS/usr/bin/pacman-key" ]; then
+# 2) Keyring: sem GPGDir o pacman aborta antes de baixar.
+if [ ! -d /etc/pacman.d/gnupg ] && [ -x /usr/bin/pacman-key ]; then
     log "keyring ausente — pacman-key --init"
-    chroot "$ROOTFS" /usr/bin/pacman-key --init >>"$LOG" 2>&1 || true
-    chroot "$ROOTFS" /usr/bin/pacman-key --populate archlinuxarm >>"$LOG" 2>&1 || true
-    chroot "$ROOTFS" /usr/bin/pacman-key --lsign-key \
+    /usr/bin/pacman-key --init >>"$LOG" 2>&1 || true
+    /usr/bin/pacman-key --populate archlinuxarm >>"$LOG" 2>&1 || true
+    /usr/bin/pacman-key --lsign-key \
         68B3537F39A313B3E574D06777193F152BDBE6A6 >>"$LOG" 2>&1 || true
 fi
 
-rc=1
-if [ -n "$CONF" ]; then
-    run_pacman --config "$CONF" --disable-sandbox -S --needed --noconfirm \
-        xcb-util-wm libxcb && rc=0
-fi
-if [ "$rc" != "0" ]; then
-    # A copia de conf pode ter falhado: tenta o caminho simples (o /etc/pacman.conf ja
-    # tratado por ensure-pacman cobre o sandbox).
-    run_pacman --disable-sandbox -S --needed --noconfirm xcb-util-wm libxcb && rc=0
-fi
-if [ "$rc" != "0" ] && missing_in_fs; then
-    run_pacman -S --needed --noconfirm xcb-util-wm libxcb && rc=0
+# 3) Libs criticas — o proprio comando que funciona, sem overrides.
+MISSING=""
+lib_present libxcb-icccm.so || MISSING="$MISSING xcb-util-wm"
+lib_present libxcb.so || MISSING="$MISSING libxcb"
+
+rc=0
+if [ -n "$MISSING" ]; then
+    log "instalando:$MISSING"
+    # shellcheck disable=SC2086
+    if /usr/bin/pacman -S --needed --noconfirm $LIB_PKGS >>"$LOG" 2>&1; then
+        rc=0
+    else
+        rc=1
+        log "pacman -S falhou (rc=$?)"
+    fi
 fi
 
-rm -rf "$HOST_STAGE" 2>/dev/null || true
+libs_ok=0
+if lib_present libxcb-icccm.so && lib_present libxcb.so; then
+    libs_ok=1
+else
+    rc=1
+fi
 
-# === Modo full: programas de X11 (WM + clientes de teste) ===============
-# O tuxbox ja sobe `openbox --sm-disable` sozinho quando o binario existe, e
-# sem xterm/xclock nao ha como conferir visualmente se o X11 esta vivo.
-install_extras() {
+# 4) Modo full: programas de X11 (WM + clientes de teste). Cada um e' sondado
+#    com `pacman -Si`; o repo do container pode nao ter o mesmo conjunto do
+#    Arch oficial, e o que faltar e' pulado com log.
+extras_note=""
+if [ "$MODE" = "full" ] && [ "$libs_ok" = "1" ]; then
     _want=""
     _skip=""
-    # "pacote:arquivo" — o arquivo e' o marcador de "ja instalado".
-    for _pair in openbox:usr/bin/openbox \
-                 xterm:usr/bin/xterm \
-                 xorg-xclock:usr/bin/xclock
-    do
+    for _pair in openbox:openbox xterm:xterm xorg-xclock:xclock; do
         _pkg="${_pair%%:*}"
         _bin="${_pair#*:}"
-        if [ -x "$ROOTFS/$_bin" ]; then
-            continue
-        fi
-        # Sonda no repo: pacote inexistente nao deve abortar a instalacao.
-        if ! chroot "$ROOTFS" /usr/bin/pacman -Si "$_pkg" >>"$LOG" 2>&1; then
+        bin_present "$_bin" && continue
+        if /usr/bin/pacman -Si "$_pkg" >>"$LOG" 2>&1; then
+            _want="$_want $_pkg"
+        else
             log "extra $_pkg: ausente no repo deste container — pulado"
             _skip="$_skip $_pkg"
-            continue
         fi
-        _want="$_want $_pkg"
     done
-    if [ -z "$_want" ]; then
-        [ -n "$_skip" ] && log "extras: nada a fazer (indisponiveis:$_skip)"
-        return 0
+    if [ -n "$_want" ]; then
+        # shellcheck disable=SC2086
+        if /usr/bin/pacman -S --needed --noconfirm $_want >>"$LOG" 2>&1; then
+            log "extras instalados:$_want"
+            extras_note=" + programas (WM/clientes)"
+        else
+            log "extras FALHARAM:$_want"
+            extras_note=" (extras falharam; as libs criticas continuam ok)"
+        fi
+    elif [ -n "$_skip" ]; then
+        extras_note=" (indisponiveis neste repo:$_skip)"
     fi
-    # shellcheck disable=SC2086
-    if run_pacman --disable-sandbox -S --needed --noconfirm $_want; then
-        log "extras instalados:$_want"
-        return 0
-    fi
-    # Retry sem a flag (alguns pacman mais antigos nao aceitam --disable-sandbox)
-    # shellcheck disable=SC2086
-    if run_pacman -S --needed --noconfirm $_want; then
-        log "extras instalados (retry):$_want"
-        return 0
-    fi
-    log "extras FALHARAM:$_want"
-    return 1
-}
-
-if [ "$MODE" = "full" ]; then
-    _extras_rc=0
-    install_extras || _extras_rc=1
-    if [ "$_extras_rc" != "0" ]; then
-        warn_note="(extras de X11 falharam; as libs criticas continuam ok)"
-    else
-        warn_note=""
-    fi
-else
-    warn_note=""
 fi
 
-if [ "$rc" = "0" ] || ! missing_in_fs; then
-    if [ "$MODE" = "full" ] && [ "$_extras_rc" = "0" ]; then
-        log "ok: instalado ($MISSING) + programas de X11$warn_note"
-        echo "instalado: libs de cliente X11 ($MISSING) + programas (WM/clientes)$warn_note"
-    else
-        log "ok: instalado ($MISSING) — plugin xcb do vkmark deve carregar$warn_note"
-        echo "instalado: libs de cliente X11 ($MISSING)$warn_note"
-    fi
+if [ "$rc" = "0" ]; then
+    log "ok: libs de cliente X11 presentes$extras_note"
+    echo "ok: libs de cliente X11 ja presentes$extras_note"
     exit 0
 fi
 
-log "FALHOU: $MISSING nao instalados (rc=$rc)"
-echo "FALHOU: rode no Arch -> pacman -S --needed --noconfirm xcb-util-wm libxcb"
+# Falha: mensagem util no terminal, com o caminho do log. Nada de sumir.
+log "FALHOU: nao foi possivel instalar as libs de cliente X11"
+printf 'X11: FALHOU ao instalar as libs de cliente (%s).\n' "$MISSING" >&2
+printf 'X11: rode no container -> pacman -S --needed --noconfirm %s\n' "$LIB_PKGS" >&2
+printf 'X11: detalhes em %s\n' "$LOG" >&2
+echo "FALHOU: libs de cliente X11"
 exit 1
