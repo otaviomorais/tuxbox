@@ -840,3 +840,79 @@ inofensivo — o driver carregou e renderizou.)
 apt. Também passa a logar `TURNIP_LIB=<bytes>` na aba Home (distro ≈ 10,5 MB,
 custom/KGSL ≈ 17,4 MB) para dar pra ver de imediato se o driver certo está no
 lugar.
+
+---
+
+## v3.43 — Arch: "a GPU funciona mas nada aparece no X11"
+
+**Sintoma**: no Arch, `vkmark` roda (Vulkan/Turnip na GPU, FPS alto) mas a tela
+do Termux:X11 fica vazia. No Debian, o mesmo comando abre janela. O servidor X
+sobe normalmente nos dois casos — o app Termux:X11 abre e `DISPLAY=:0` existe.
+
+**Causa raiz** (confirmada em duas fontes):
+
+1. `vkmark` upstream monta o backend X11 como **plugin carregável**, não linkado
+   no binário — `src/meson.build`:
+
+   ```meson
+   if build_xcb_ws
+       xcb_ws = shared_module('xcb', ...
+           dependencies : [vulkan_dep, xcb_dep, xcb_icccm_dep] ...)
+   endif
+   ```
+
+   O plugin é `dlopen()`ado em tempo de execução e precisa de `libxcb` +
+   `libxcb-icccm` presentes. No Arch, `xcb-util-wm` é dependência **opcional**
+   ("for X11 support") do pacote `vkmark`; no Debian a pilha X11 entra como
+   dependência dura. Sem as libs, o loader cai no plugin `headless`: o Vulkan
+   continua renderizando na GPU (surface offscreen) e **nenhuma janela é criada**.
+
+2. A imagem base do Arch (`tuxbox-archlinux-current-arm64.tar.xz`) não tem
+   **nenhuma** lib de cliente X11 — verificado no tarball: zero `libxcb*`,
+   zero `libX11*`, zero `libXext`, zero Wayland, e nem `xkeyboard-config`
+   (por isso `ensure-xkb` existe). É por isso que o Debian, que já traz a pilha
+   X11, funciona e o Arch não.
+
+Ou seja: não era servidor X, display, WM nem GPU. Era falta de runtime do
+**cliente** X11 no Arch.
+
+**Correção**: helper novo `assets/bin/ensure-x11-clients`, Arch-only (sem
+`pacman` no rootfs ele é no-op — Debian/Ubuntu/Alpine/Fedora intocados):
+
+- detecta `libxcb.so*` / `libxcb-icccm.so*` no rootfs;
+- se faltarem, instala `xcb-util-wm libxcb` com
+  `pacman --disable-sandbox -S --needed --noconfirm`, usando um conf temporário
+  com `DisableSandbox` injetado (o Landlock do pacman 7 não existe na maioria
+  dos kernels Android);
+- loga em `/var/log/tuxbox-x11-clients.log` e é idempotente.
+
+Chamado de três lugares: boot de toda sessão `--gui` (logo após `ensure-xkb`),
+no botão de instalar binários da Home (junto do `ensure-pacman`), e instalado
+pelo `AssetInstaller`.
+
+**Diagnóstico pós-pivot** (v3.43): antes não havia nenhuma verificação depois
+do `pivot_root`, então uma sessão podia exportar `DISPLAY=:0` com o socket
+ausente e o gráfico rodar "invisível" — exatamente o sintoma relatado. Agora o
+boot grava no log:
+
+```
+X11: pos-pivot OK — /tmp/.X11-unix/X0 e' socket; DISPLAY=:0
+X11: libs de cliente xcb=1 (vkmark/glxgears so' abrem janela com elas)
+```
+
+`xcb=0` com socket OK = cliente sem libs (este bug). `pos-pivot FALHOU` =
+problema de socket/symlink, não de cliente.
+
+**Comando manual equivalente** (não precisa do APK):
+
+```sh
+pacman -S --needed --noconfirm xcb-util-wm libxcb
+vkmark            # agora abre janela no Termux:X11
+```
+
+**Testes**: `tool/test/ensure-x11-clients.test.sh` — 22 casos sintéticos
+(no-Arch não chama nada, Arch completo é idempotente, Arch incompleto instala
+com os argumentos certos, `DisableSandbox` no conf, stage temporário limpo,
+log gravado, rc 2 sem argumento) + 9 casos contra a **imagem Arch real**
+(`RUN_ARCH_TAR_TEST=1`, extrai `usr/bin/pacman` e `etc/pacman.conf` do tarball
+oficial). Total 31/31 passando.
