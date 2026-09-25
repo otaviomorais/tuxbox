@@ -56,10 +56,40 @@ printf '%s\n' "$*" >>"$ARGS_FILE"
 if [ -f "$root/.tuxbox-x11-pacman/pacman.conf" ]; then
     cp "$root/.tuxbox-x11-pacman/pacman.conf" "$ARGS_FILE.conf"
 fi
-# simula o pacman instalando o pacote
-mkdir -p "$root/usr/lib"
+# Sonda de repo (-Si): AVAILABLE_PKGS lista o que existe neste "repo".
+# O helper chama `pacman -Si <pacote>`; o nome do pacote e' o ultimo arg.
+case " $* " in
+    *" -Si "*)
+        _probe=""
+        for _a in "$@"; do
+            case "$_a" in
+                -*) continue ;;
+                /usr/bin/pacman) continue ;;
+            esac
+            _probe="$_a"
+        done
+        for p in $AVAILABLE_PKGS; do
+            [ "$p" = "$_probe" ] && exit 0
+        done
+        exit 1
+        ;;
+esac
+# Instalacao (-S): cria libs e os binarios pedidos.
+mkdir -p "$root/usr/lib" "$root/usr/bin"
 : >"$root/usr/lib/libxcb.so.1"
 : >"$root/usr/lib/libxcb-icccm.so.4"
+for a in "$@"; do
+    case "$a" in
+        -*) continue ;;
+    esac
+    case "$a" in
+        xcb-util-wm|libxcb) ;;
+        openbox) : >"$root/usr/bin/openbox" ;;
+        xterm) : >"$root/usr/bin/xterm" ;;
+        xorg-xclock) : >"$root/usr/bin/xclock" ;;
+    esac
+done
+chmod 755 "$root"/usr/bin/* 2>/dev/null || true
 exit 0
 STUB
     chmod 755 "$_bin/chroot"
@@ -71,7 +101,7 @@ printf 'ensure-x11-clients\n'
 R="$TMP/r1"; make_rootfs "$R" no no
 BIN="$TMP/bin1"; setup_chroot_stub "$BIN"
 ARGS_FILE="$TMP/args1" out="$R/../../out1"; : >"$TMP/args1"
-out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args1" sh "$HELPER" "$R" 2>&1)"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args1" AVAILABLE_PKGS="" sh "$HELPER" "$R" 2>&1)"
 rc=$?
 [ "$rc" = "0" ] && ok "nao-arch retorna 0" || bad "nao-arch rc=$rc"
 [ "$out" = "skip: nao-arch" ] && ok "nao-arch imprime 'skip: nao-arch'" || bad "nao-arch saida='$out'"
@@ -81,7 +111,7 @@ rc=$?
 R="$TMP/r2"; make_rootfs "$R" pacman libs
 BIN="$TMP/bin2"; setup_chroot_stub "$BIN"
 : >"$TMP/args2"
-out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args2" sh "$HELPER" "$R" 2>&1)"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args2" AVAILABLE_PKGS="" sh "$HELPER" "$R" 2>&1)"
 rc=$?
 [ "$rc" = "0" ] && ok "arch completo retorna 0" || bad "arch completo rc=$rc"
 case "$out" in ok:*) ok "arch completo nao reinstala" ;; *) bad "arch completo saida='$out'" ;; esac
@@ -91,7 +121,7 @@ case "$out" in ok:*) ok "arch completo nao reinstala" ;; *) bad "arch completo s
 R="$TMP/r3"; make_rootfs "$R" pacman no
 BIN="$TMP/bin3"; setup_chroot_stub "$BIN"
 : >"$TMP/args3"
-out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args3" sh "$HELPER" "$R" 2>&1)"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args3" AVAILABLE_PKGS="" sh "$HELPER" "$R" 2>&1)"
 rc=$?
 [ "$rc" = "0" ] && ok "arch sem libs retorna 0" || bad "arch sem libs rc=$rc"
 case "$out" in instalado:*) ok "arch sem libs instala" ;; *) bad "arch sem libs saida='$out'" ;; esac
@@ -117,7 +147,7 @@ fi
 
 # 3c) Idempotencia: segunda rodada nao chama chroot.
 : >"$TMP/args3b"
-out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args3b" sh "$HELPER" "$R" 2>&1)"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args3b" AVAILABLE_PKGS="" sh "$HELPER" "$R" 2>&1)"
 rc=$?
 [ "$rc" = "0" ] && ok "segunda rodada retorna 0" || bad "segunda rodada rc=$rc"
 [ ! -s "$TMP/args3b" ] && ok "segunda rodada nao reinstala" || bad "segunda rodada reinstalou"
@@ -143,8 +173,15 @@ if [ "${RUN_ARCH_TAR_TEST:-0}" = "1" ] && [ -r "$ARCH_TAR" ]; then
     if tar -xJf "$ARCH_TAR" -C "$R" ./usr/bin/pacman ./etc/pacman.conf 2>/dev/null; then
         BIN="$TMP/bin6"; setup_chroot_stub "$BIN"
         : >"$TMP/args6"
-        out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args6" sh "$HELPER" "$R" 2>&1)"
+        out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args6" AVAILABLE_PKGS="openbox xterm xorg-xclock" \
+            sh "$HELPER" "$R" full 2>&1)"
         rc=$?
+        for needle in openbox xterm xorg-xclock; do
+            case "$(cat "$TMP/args6")" in
+                *"$needle"*) ok "imagem Arch real: sonda $needle" ;;
+                *) bad "imagem Arch real: nao sondou $needle" ;;
+            esac
+        done
         [ "$rc" = "0" ] && ok "imagem Arch real: rc 0" || bad "imagem Arch real: rc=$rc ($out)"
         case "$out" in
             instalado:*) ok "imagem Arch real: detecta libs ausentes e instala" ;;
@@ -165,6 +202,48 @@ if [ "${RUN_ARCH_TAR_TEST:-0}" = "1" ] && [ -r "$ARCH_TAR" ]; then
 else
     printf '  skip imagem Arch real (RUN_ARCH_TAR_TEST=1 + tarball presente)\n'
 fi
+
+# 7) Modo "full": libs + programas de X11 (WM e clientes de teste).
+R="$TMP/r7"; make_rootfs "$R" pacman no
+BIN="$TMP/bin7"; setup_chroot_stub "$BIN"
+: >"$TMP/args7"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args7" AVAILABLE_PKGS="openbox xterm" \
+    sh "$HELPER" "$R" full 2>&1)"
+rc=$?
+[ "$rc" = "0" ] && ok "modo full: rc 0" || bad "modo full: rc=$rc ($out)"
+case "$out" in
+    *programas*) ok "modo full: instala programas de X11" ;;
+    *) bad "modo full: saida='$out'" ;;
+esac
+[ -x "$R/usr/bin/openbox" ] && ok "modo full: openbox instalado" || bad "modo full: sem openbox"
+[ -x "$R/usr/bin/xterm" ] && ok "modo full: xterm instalado" || bad "modo full: sem xterm"
+[ -x "$R/usr/bin/xclock" ] && bad "modo full: xclock instalado apesar de ausente no repo" \
+    || ok "modo full: xorg-xclock pulado (ausente no repo)"
+grep -q 'ausente no repo' "$R/var/log/tuxbox-x11-clients.log" \
+    && ok "modo full: log registra pacote pulado" || bad "modo full: sem log de pulo"
+
+# 7b) Modo full e' idempotente.
+: >"$TMP/args7b"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args7b" AVAILABLE_PKGS="openbox xterm" \
+    sh "$HELPER" "$R" full 2>&1)"
+[ "$?" = "0" ] && ok "modo full: segunda rodada rc 0" || bad "modo full: segunda rodada falhou"
+if grep -q ' -S ' "$TMP/args7b" 2>/dev/null; then
+    bad "modo full: reinstalou ($(tr '\n' '|' < "$TMP/args7b"))"
+else
+    ok "modo full: segunda rodada nao reinstala"
+fi
+
+# 8) Modo default (sem 2o arg) NAO instala programas grandes.
+R="$TMP/r8"; make_rootfs "$R" pacman no
+BIN="$TMP/bin8"; setup_chroot_stub "$BIN"
+: >"$TMP/args8"
+out="$(PATH="$BIN:$PATH" ARGS_FILE="$TMP/args8" AVAILABLE_PKGS="openbox xterm xorg-xclock" \
+    sh "$HELPER" "$R" 2>&1)"
+rc=$?
+[ "$rc" = "0" ] && ok "modo default: rc 0" || bad "modo default: rc=$rc"
+[ -x "$R/usr/bin/openbox" ] && bad "modo default instalou openbox" || ok "modo default: so' libs"
+grep -q 'openbox' "$TMP/args8" && bad "modo default mandou openbox ao pacman" \
+    || ok "modo default: nenhum programa pedido ao pacman"
 
 printf '\n%d ok, %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ] || exit 1

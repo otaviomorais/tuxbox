@@ -806,12 +806,22 @@ public class HomeFragment extends Fragment {
                 AssetInstaller.install(appCtx);
                 String binDir = AssetInstaller.binDir(appCtx).getAbsolutePath();
                 String ensureXkb = binDir + "/ensure-xkb";
+                String ensureX11 = binDir + "/ensure-x11-clients";
+                // ensure-xkb roda em todos os containers; ensure-x11-clients
+                // (modo "full") e' Arch-only e traz as libs de cliente X11 que
+                // o plugin dlopen()ado do vkmark precisa, mais openbox/xterm/
+                // xorg-xclock para ter WM e um cliente de teste. Em outras
+                // distros o helper sai no-op.
                 String installXkb = "for d in " + TuxPaths.ROOTFS_BASE + "/*; do "
                         + "[ -d \"$d\" ] || continue; "
                         + "\"" + ensureXkb + "\" \"$d\" || true; "
+                        + "if [ -x \"" + ensureX11 + "\" ]; then "
+                        + "\"" + ensureX11 + "\" \"$d\" full || true; fi; "
                         + "done";
                 RootShell.run("chmod 755 " + binDir + "/tuxbox " + binDir + "/tuxbox-mini "
-                        + binDir + "/getroot " + binDir + "/ensure-xkb " + binDir + "/ptyd 2>&1; "
+                        + binDir + "/getroot " + binDir + "/ensure-xkb "
+                        + binDir + "/ensure-pacman " + binDir + "/ensure-x11-clients "
+                        + binDir + "/ptyd 2>&1; "
                         + "mkdir -p " + TuxPaths.ROOTFS_BASE + "; " + installXkb);
                 log(getString(R.string.home_installed));
             } catch (Exception e) {

@@ -14,12 +14,23 @@
 # benchmark funciona "por fora" e a tela fica vazia. No Debian a pilha X11 entra
 # como dependencia dura, por isso o mesmo comando abre janela la e nao aqui.
 #
+# Modo "full" (botao "Instalar binarios") instala tambem os PROGRAMAS de X11
+# uteis: openbox (gerenciador de janelas, que o tuxbox sobe sozinho se existir),
+# xterm e xorg-xclock (cliente de teste). Cada um e' sondado com `pacman -Si`
+# antes: o repo do container pode ser archlinuxarm e nao ter o mesmo conjunto de
+# pacotes do Arch oficial, entao o que nao existir e' apenas pulado.
+#
 # Nao mexe em nenhuma outra distro: sem pacman no rootfs e' no-op.
-# Uso: ensure-x11-clients <rootfs>
+# Uso: ensure-x11-clients <rootfs> [minimal|full]
 
 ROOTFS="${1:-}"
+MODE="${2:-minimal}"
 [ -n "$ROOTFS" ] || exit 2
 [ -d "$ROOTFS" ] || exit 2
+case "$MODE" in
+    full|minimal) ;;
+    *) MODE="minimal" ;;
+esac
 
 # Arch apenas. Qualquer outra distro (Debian/Ubuntu/Alpine/Fedora...) sai intacta.
 [ -x "$ROOTFS/usr/bin/pacman" ] || { echo "skip: nao-arch"; exit 0; }
@@ -101,9 +112,69 @@ fi
 
 rm -rf "$HOST_STAGE" 2>/dev/null || true
 
+# === Modo full: programas de X11 (WM + clientes de teste) ===============
+# O tuxbox ja sobe `openbox --sm-disable` sozinho quando o binario existe, e
+# sem xterm/xclock nao ha como conferir visualmente se o X11 esta vivo.
+install_extras() {
+    _want=""
+    _skip=""
+    # "pacote:arquivo" — o arquivo e' o marcador de "ja instalado".
+    for _pair in openbox:usr/bin/openbox \
+                 xterm:usr/bin/xterm \
+                 xorg-xclock:usr/bin/xclock
+    do
+        _pkg="${_pair%%:*}"
+        _bin="${_pair#*:}"
+        if [ -x "$ROOTFS/$_bin" ]; then
+            continue
+        fi
+        # Sonda no repo: pacote inexistente nao deve abortar a instalacao.
+        if ! chroot "$ROOTFS" /usr/bin/pacman -Si "$_pkg" >>"$LOG" 2>&1; then
+            log "extra $_pkg: ausente no repo deste container — pulado"
+            _skip="$_skip $_pkg"
+            continue
+        fi
+        _want="$_want $_pkg"
+    done
+    if [ -z "$_want" ]; then
+        [ -n "$_skip" ] && log "extras: nada a fazer (indisponiveis:$_skip)"
+        return 0
+    fi
+    # shellcheck disable=SC2086
+    if run_pacman --disable-sandbox -S --needed --noconfirm $_want; then
+        log "extras instalados:$_want"
+        return 0
+    fi
+    # Retry sem a flag (alguns pacman mais antigos nao aceitam --disable-sandbox)
+    # shellcheck disable=SC2086
+    if run_pacman -S --needed --noconfirm $_want; then
+        log "extras instalados (retry):$_want"
+        return 0
+    fi
+    log "extras FALHARAM:$_want"
+    return 1
+}
+
+if [ "$MODE" = "full" ]; then
+    _extras_rc=0
+    install_extras || _extras_rc=1
+    if [ "$_extras_rc" != "0" ]; then
+        warn_note="(extras de X11 falharam; as libs criticas continuam ok)"
+    else
+        warn_note=""
+    fi
+else
+    warn_note=""
+fi
+
 if [ "$rc" = "0" ] || ! missing_in_fs; then
-    log "ok: instalado ($MISSING) — plugin xcb do vkmark deve carregar"
-    echo "instalado: libs de cliente X11 ($MISSING)"
+    if [ "$MODE" = "full" ] && [ "$_extras_rc" = "0" ]; then
+        log "ok: instalado ($MISSING) + programas de X11$warn_note"
+        echo "instalado: libs de cliente X11 ($MISSING) + programas (WM/clientes)$warn_note"
+    else
+        log "ok: instalado ($MISSING) — plugin xcb do vkmark deve carregar$warn_note"
+        echo "instalado: libs de cliente X11 ($MISSING)$warn_note"
+    fi
     exit 0
 fi
 
