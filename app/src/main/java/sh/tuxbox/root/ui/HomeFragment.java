@@ -674,7 +674,7 @@ public class HomeFragment extends Fragment {
                 + " rm -f \"$D/etc/resolv.conf\"; for n in $dns; do echo \"nameserver $n\"; done > \"$D/etc/resolv.conf\";"
                 + " rm -rf " + qStage + " \"$D/.tuxbox-mesa-cache\" \"$D/.tuxbox-mesa-pacman.conf\"; mkdir -p " + qStage + " \"$D/.tuxbox-mesa-cache\";"
                 + " if [ -f \"$D/etc/pacman.conf\" ]; then cp \"$D/etc/pacman.conf\" \"$D/.tuxbox-mesa-pacman.conf\" 2>/dev/null || true; "
-                + "sed -i 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Optional DatabaseOptional TrustAll/' \"$D/.tuxbox-mesa-pacman.conf\" 2>/dev/null || true; "
+                + "sed -i 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Required DatabaseOptional TrustAll/' \"$D/.tuxbox-mesa-pacman.conf\" 2>/dev/null || true; "
                 + "sed -i 's/^[[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' \"$D/.tuxbox-mesa-pacman.conf\" 2>/dev/null || true; fi;"
                 + " tar -xf " + qArchive + " -C " + qStage + " 2>&1; outer_rc=$?; pkg_rc=$outer_rc;"
                 + " if [ \"$outer_rc\" = \"0\" ] && [ -x \"$D/usr/bin/pacman\" ]; then"
