@@ -1,4 +1,7 @@
 #!/system/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LongQT-sea <long025733@gmail.com>
+#
 # Ensure a container has the XKB data required by termux-x11.
 # Usage: ensure-xkb <rootfs>
 # Runs on the Android host as root and installs the distro-specific package

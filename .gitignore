@@ -1,5 +1,55 @@
-# artefatos de build (geráveis com gradle)
-app/build/
+# Artefatos de build
 .gradle/
+**/build/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+__pycache__/
+*.py[cod]
 *.o
+*.obj
+*.a
+*.so
+*.hprof
+*.log
+out/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+tool/ptyd
+tool/tclient
+
+# Configuração local do Android/Gradle
 local.properties
+.idea/
+*.iml
+.vscode/
+
+# Segredos e chaves de assinatura — nunca versionar
+keystore.properties
+signing.properties
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+.env
+.env.*
+
+# Imagens rootfs e conteúdo local nunca entram no repositório
+*.tar
+*.tar.xz
+*.tar.gz
+*.tgz
+*.zip
+*.xz
+*.img
+*.iso
+/rootfs/
+/data/
+
+# Sistema operacional e editores
+.DS_Store
+Thumbs.db

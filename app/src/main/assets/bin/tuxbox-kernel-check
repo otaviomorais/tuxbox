@@ -1,4 +1,7 @@
 #!/system/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LongQT-sea <long025733@gmail.com>
+#
 # tuxbox-kernel-check — diagnostico de capabilities do kernel/root.
 #
 # Responde uma pergunta que o `die` do tuxbox nao responde: o QUE esse

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* test client for ptyd - connects to unix socket, sends/receives frames */
 #include <arpa/inet.h>
 #include <stdio.h>

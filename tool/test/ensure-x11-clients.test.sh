@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LongQT-sea <long025733@gmail.com>
+#
 # Testes do ensure-x11-clients (Arch-only).
 #
 # Roda em Linux comum, sem Android. Dois cenarios:
@@ -366,7 +369,7 @@ rc=$?
 # =========================================================================
 # 3) Imagem Arch REAL (opt-in): conf de fabrica do tarball oficial.
 # =========================================================================
-ARCH_TAR="${ARCH_TAR:-/mnt/storage/Download/TuxBox/tuxbox-archlinux-current-arm64.tar.xz}"
+ARCH_TAR="${ARCH_TAR:-}"
 if [ "${RUN_ARCH_TAR_TEST:-0}" = "1" ] && [ -r "$ARCH_TAR" ]; then
     R="$TMP/r6"
     mkdir -p "$R"

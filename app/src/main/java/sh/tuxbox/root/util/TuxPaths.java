@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 LongQT-sea
 package sh.tuxbox.root.util;
 
 /** Single source of truth for the container base directory (rootfs location). */

@@ -1,4 +1,7 @@
 #!/system/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LongQT-sea <long025733@gmail.com>
+#
 # ensure-x11-clients — Arch-only: garante as libs de CLIENTE X11 que os
 # graficos abrem em tempo de execucao para conseguir criar janela no $DISPLAY.
 #

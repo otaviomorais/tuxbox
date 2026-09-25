@@ -15,6 +15,7 @@
  *     [0x03][u32 len=4][exit code]
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 LongQT-sea
  */
 #include <arpa/inet.h>
 #include <errno.h>

@@ -138,7 +138,9 @@
 
     <!-- about -->
     <string name="about_title">Sobre o TuxBox</string>
-    <string name="about_body">O <b>TuxBox</b> roda containers Linux leves no seu Android usando namespaces de montagem (unshare + pivot_root), sem chroot nem truques.\n\n• <b>Baixar</b>: instala containers de distribuições Linux via linuxcontainers.org\n• <b>Containers</b>: gerencia os containers instalados em /data/local/tuxbox\n• <b>Terminal</b>: emulador de terminal embutido (estilo Termux) conectado ao container via ptyd + su\n\nRequer root (Magisk ou KernelSU).</string>
+    <string name="about_body">O <b>TuxBox</b> executa containers Linux leves no Android usando namespaces de montagem, bind mounts e <b>pivot_root/chroot</b>, sem nspawn ou systemd.\n\n• <b>Baixar</b>: instala rootfs disponíveis no linuxcontainers.org\n• <b>Containers</b>: gerencia ambientes instalados em /data/local/tuxbox\n• <b>Terminal</b>: emulador integrado conectado ao container via ptyd + su\n• <b>Diagnóstico</b>: testa recursos reais do kernel, GPU, X11 e rootfs\n\n<b>Requer Android 10+ e root (Magisk ou KernelSU).</b> É um projeto experimental: leia os avisos de segurança no repositório antes de usar.</string>
+    <string name="about_license">Licenciado sob GPL-3.0-only.\nCopyright © 2026 LongQT-sea e colaboradores do TuxBox.\nO terminal contém componentes adaptados do Termux; consulte os avisos de terceiros no código-fonte.</string>
+    <string name="about_source">Código-fonte, licença e documentação:\nhttps://github.com/otaviomorais/tuxbox</string>
 
     <!-- text selection (usados pelo TerminalView do Termux) -->
     <string name="copy_text">Copiar</string>

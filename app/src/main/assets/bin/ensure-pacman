@@ -1,4 +1,7 @@
 #!/system/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LongQT-sea <long025733@gmail.com>
+#
 # Prepare Arch pacman for an Android/TuxBox container.
 #
 # Android kernels generally do not expose Landlock, which pacman 7 requires
@@ -14,7 +17,9 @@ ROOTFS="${1:-}"
 CONF="$ROOTFS/etc/pacman.conf"
 [ -f "$CONF" ] || exit 0
 
-# Disable only the download sandbox. Package signature checks remain enabled.
+# Landlock is commonly unavailable on Android, so disable pacman's download
+# sandbox. TrustAll below still requires package signatures, but deliberately
+# does not restrict trust to the official keyring; see README Security.
 if ! grep -q '^[[:space:]]*DisableSandbox[[:space:]]*$' "$CONF" 2>/dev/null; then
     if grep -q '^[[:space:]]*#[[:space:]]*DisableSandbox[[:space:]]*$' "$CONF" 2>/dev/null; then
         sed -i 's/^[[:space:]]*#[[:space:]]*DisableSandbox[[:space:]]*$/DisableSandbox/' "$CONF" 2>/dev/null || true

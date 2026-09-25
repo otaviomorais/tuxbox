@@ -20,4 +20,23 @@
         android:text="@string/about_body"
         android:textColor="@color/tux_text"
         android:textIsSelectable="true" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/about_license"
+        android:textColor="@color/tux_text_secondary"
+        android:textIsSelectable="true"
+        android:textSize="13sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:autoLink="web"
+        android:text="@string/about_source"
+        android:textColor="@color/tux_cyan"
+        android:textIsSelectable="true"
+        android:textSize="13sp" />
 </LinearLayout>

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LongQT-sea <long025733@gmail.com>
 """
 Rebuild ptyd for all ABIs on this aarch64 host.
 
@@ -14,17 +16,24 @@ loses that alignment — so we force ELF TLS with -fno-emulated-tls, matching th
 previously shipped (device-proven) binaries (PT_TLS 0x8/0x80/align 0x40).
 """
 
+import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
-NDKBIN = "/opt/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin"
-QEMU = ["qemu-x86_64", "-L", "/usr/x86_64-linux-gnu"]
+ROOT = Path(__file__).resolve().parent.parent
+NDKBIN = os.environ.get(
+    "NDKBIN", "/opt/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin"
+)
+QEMU = os.environ.get("QEMU", "qemu-x86_64")
+QEMU_SYSROOT = os.environ.get("QEMU_SYSROOT", "/usr/x86_64-linux-gnu")
+QEMU_CMD = [QEMU, "-L", QEMU_SYSROOT]
 CLANG = f"{NDKBIN}/clang-17"
 LINKER = f"{NDKBIN}/ld.lld"
-SRC = "/root/nspawn-apk/tool/ptyd.c"
-ASSETS = "/root/nspawn-apk/app/src/main/assets/ptyd"
-CWD = "/root/nspawn-apk/tool"
+SRC = ROOT / "tool" / "ptyd.c"
+ASSETS = ROOT / "app" / "src" / "main" / "assets" / "ptyd"
+CWD = ROOT / "tool"
 
 ABIS = {
     "arm64-v8a": "aarch64-linux-android24",
@@ -47,7 +56,7 @@ def run(args):
 
 
 def dry_run(target):
-    p = run([*QEMU, CLANG, f"--target={target}", "-O2", "-static",
+    p = run([*QEMU_CMD, CLANG, f"--target={target}", "-O2", "-static",
              "-o", "/tmp/pty-out", "ptyd.c", "-###"])
     # clang -### prints the commands to stderr
     out = p.stderr + "\n" + p.stdout
@@ -77,7 +86,7 @@ def main():
         assert cc1_args[0].endswith("clang-17"), cc1_args[0]
         cc1_args = fix_output(cc1_args[1:], obj)  # drop the binary token
         cc1_args.append("-fno-emulated-tls")
-        run([*QEMU, CLANG, *cc1_args])
+        run([*QEMU_CMD, CLANG, *cc1_args])
         print(f"[{abi}] cc1 -> {obj}")
 
         # ---- link stage: ld.lld under qemu (swap in our object)
@@ -89,7 +98,7 @@ def main():
         for i, a in enumerate(ld_args):
             if a.startswith("/tmp/") and a.endswith(".o"):
                 ld_args[i] = obj
-        run([*QEMU, LINKER, *ld_args])
+        run([*QEMU_CMD, LINKER, *ld_args])
         print(f"[{abi}] ld.lld -> {final}")
 
 

@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LongQT-sea <long025733@gmail.com>
+#
 # Testes do tuxbox-kernel-check.
 #
 # O script tem duas responsabilidades que precisam ser conferidas:
