@@ -5,7 +5,6 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.MenuItem;
-import android.view.View;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
@@ -31,14 +30,6 @@ public class MainActivity extends AppCompatActivity {
 
         bottomNav = findViewById(R.id.bottomNav);
         bottomNav.setOnItemSelectedListener(this::onNavItemSelected);
-        bottomNav.setOnItemReselectedListener(item -> {
-            // Quando o menu do Terminal está aberto temporariamente, tocar em
-            // Terminal novamente apenas o recolhe — sem recriar a FragmentView,
-            // perder foco/teclado ou reanexar a sessão desnecessariamente.
-            if (item.getItemId() == R.id.nav_terminal) {
-                setTerminalNavigationCollapsed(true);
-            }
-        });
 
         if (savedInstanceState == null) {
             bottomNav.setSelectedItemId(R.id.nav_home);
@@ -53,31 +44,9 @@ public class MainActivity extends AppCompatActivity {
         // às configurações se já estiver bloqueada.
     }
 
-    @Override
-    protected void onPostCreate(Bundle savedInstanceState) {
-        super.onPostCreate(savedInstanceState);
-        // A Activity pode ser restaurada diretamente no Terminal. A BottomNavigationView
-        // restaura o item selecionado por conta própria; sincronizamos o espaço extra
-        // depois que a hierarquia de Views terminou de ser restaurada.
-        setTerminalNavigationCollapsed(
-                bottomNav.getSelectedItemId() == R.id.nav_terminal);
-    }
-
-    private void setTerminalNavigationCollapsed(boolean collapsed) {
-        bottomNav.setVisibility(collapsed ? View.GONE : View.VISIBLE);
-    }
-
-    /** Revela a navegação temporariamente a partir do botão compacto do Terminal. */
-    public void showTerminalNavigation() {
-        if (bottomNav.getSelectedItemId() == R.id.nav_terminal) {
-            setTerminalNavigationCollapsed(false);
-        }
-    }
-
     private boolean onNavItemSelected(@NonNull MenuItem item) {
         Fragment f = null;
         int id = item.getItemId();
-        setTerminalNavigationCollapsed(id == R.id.nav_terminal);
         if (id == R.id.nav_home) {
             f = new HomeFragment();
         } else if (id == R.id.nav_download) {
