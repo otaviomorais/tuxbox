@@ -401,7 +401,7 @@ public class DownloadFragment extends Fragment {
         }
     }
 
-    /** Extract tar.xz in Java (XZ + TarArchiveInputStream), returns number of entries. */
+    /** Extract tar.xz in Java and return symlinks that must be recreated as root. */
     private List<SymlinkSpec> extract(File tarXz, File destDir) throws Exception {
         destDir.mkdirs();
         List<SymlinkSpec> symlinks = new ArrayList<>();
@@ -418,18 +418,10 @@ public class DownloadFragment extends Fragment {
                 } else if (entry.isSymbolicLink()) {
                     File parent = outFile.getParentFile();
                     if (parent != null) parent.mkdirs();
-                    String linkTarget = entry.getLinkName();
-                    symlinks.add(new SymlinkSpec(name, linkTarget));
-                    java.nio.file.Path link = outFile.toPath();
-                    try { java.nio.file.Files.deleteIfExists(link); } catch (Exception ignore) { }
-                    try {
-                        java.nio.file.Files.createSymbolicLink(link, java.nio.file.Paths.get(linkTarget));
-                    } catch (Exception ignore) {
-                        // Android app storage may reject symlink(2). Never fall
-                        // back to FileOutputStream here: for /bin -> usr/bin
-                        // that follows the link into a directory and throws
-                        // EACCES. The root-side repair below recreates it.
-                    }
+                    symlinks.add(new SymlinkSpec(name, entry.getLinkName()));
+                    // Defer symlink(2) until all regular entries are written.
+                    // This prevents an early /bin -> usr/bin link from making
+                    // a later parent lookup follow a not-yet-created directory.
                 } else {
                     File parent = outFile.getParentFile();
                     if (parent != null) parent.mkdirs();
@@ -441,6 +433,20 @@ public class DownloadFragment extends Fragment {
                     applyMode(outFile, entry.getMode());
                 }
             }
+        }
+        // Create links only after extraction; if Android's app sandbox still
+        // rejects symlink(2), moveToMnt repairs them as root in the destination.
+        for (SymlinkSpec link : symlinks) {
+            File linkFile = new File(destDir, link.path);
+            File parent = linkFile.getParentFile();
+            if (parent != null) parent.mkdirs();
+            try {
+                java.nio.file.Files.deleteIfExists(linkFile.toPath());
+            } catch (Exception ignore) { }
+            try {
+                java.nio.file.Files.createSymbolicLink(linkFile.toPath(),
+                        java.nio.file.Paths.get(link.target));
+            } catch (Exception ignore) { }
         }
         return symlinks;
     }
