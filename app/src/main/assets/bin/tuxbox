@@ -595,25 +595,45 @@ if [ "${PHASE2:-}" = "1" ]; then
                 done
                 return 1
             }
-            # v3.17 — display :0 e' UNICO na tela do aparelho. Se OUTRO container
-            # ja tem o servidor X vivo, este nao pode simplesmente mata-lo: o
-            # watchdog alheio reclaima o :0 em ~1s e os dois se atropelam
-            # (medido: Debian esperou 40s+24s e perdeu; o Ubuntu voltou com
-            # "wd start pid=145"). Em vez de esperar e falhar com mensagem
-            # generica, detectamos o dono estrangeiro em SEGUNDOS e avisamos.
-            # Escape hatch: /root/.x11_takeover assume o display.
+            # v3.41 — display :0 e' global, mas o mesmo servidor Termux:X11
+            # pode servir varios containers. Se outro rootfs ja possui o
+            # listener, reutilizamos seu socket por um bind mount em vez de
+            # bloquear a segunda GUI. O fallback takeover permanece para o
+            # caso o bind seja proibido pelo SELinux.
             _x11_takeover=0
             [ -f "$ROOTFS/root/.x11_takeover" ] && _x11_takeover=1
             _x11_owner=""
+            _x11_shared=0
+            _x11_shared_sock=""
             if [ "$_x11_takeover" != "1" ]; then
                 _x11_owner="$(awk 'NR>1 && $6=="01" {print $NF}' /proc/net/unix 2>/dev/null \
                     | grep -E '/\.X11-unix/X[0-9]+$|/xvfb\.sock$' \
                     | grep -v "^$_SRV/" | head -n 1)"
             fi
             if [ -n "$_x11_owner" ]; then
-                bootinfo "X11: display :0 ja pertence a outro container ($_x11_owner) — este container abriu SEM X11"
-                warn "X11: o display :0 ja esta em uso por outro container; para usa-lo aqui, feche as abas --gui do outro (ou crie /root/.x11_takeover para assumir)"
-            else
+                _x11_owner_dir=""
+                case "$_x11_owner" in
+                    */.X11-unix/X0)
+                        _x11_owner_dir="${_x11_owner%/.X11-unix/X0}"
+                        _x11_shared_sock=".X11-unix/X0"
+                        ;;
+                    */xvfb.sock)
+                        _x11_owner_dir="${_x11_owner%/xvfb.sock}"
+                        _x11_shared_sock="xvfb.sock"
+                        ;;
+                esac
+                _x11_shared_mount="$ROOTFS/var/lib/tuxbox-x11-shared"
+                mkdir -p "$_x11_shared_mount" "$ROOTFS/tmp/.X11-unix" 2>/dev/null || true
+                if [ -n "$_x11_owner_dir" ] && [ -d "$_x11_owner_dir" ] && \
+                   mount -o bind "$_x11_owner_dir" "$_x11_shared_mount" 2>/dev/null; then
+                    _x11_shared=1
+                    bootinfo "X11: display :0 compartilhado com outro container ($_x11_owner)"
+                else
+                    bootinfo "X11: display :0 pertence a outro container ($_x11_owner), mas o bind do socket falhou — este container abriu SEM X11"
+                    warn "X11: o display :0 ja esta em uso; feche a outra GUI ou crie /root/.x11_takeover para assumir"
+                fi
+            fi
+            if [ "$_x11_shared" != "1" ] && [ -z "$_x11_owner" -o "$_x11_takeover" = "1" ]; then
                 _x11_trylaunch
                 if _x11_wait 100; then
                     bootinfo "X11: servidor visto no wait (compartilhado ok)"
@@ -631,7 +651,9 @@ if [ "${PHASE2:-}" = "1" ]; then
             # entao a validacao usa o par (socket real em _SRV + symlink
             # presente em $ROOTFS/tmp), nunca resolve o alvo aqui.
             _SOCK=
-            if [ -S "$_SRV/.X11-unix/X0" ]; then
+            if [ "$_x11_shared" = "1" ]; then
+                _SOCK="var/lib/tuxbox-x11-shared/$_x11_shared_sock"
+            elif [ -S "$_SRV/.X11-unix/X0" ]; then
                 _SOCK="$_SR/.X11-unix/X0"
             elif [ -S "$_SRV/xvfb.sock" ]; then
                 _SOCK="$_SR/xvfb.sock"
@@ -650,6 +672,7 @@ if [ "${PHASE2:-}" = "1" ]; then
             # COMPARTILHADO e ressuscita UM unico servidor (restore serializado
             # por flock + re-check). Singleton por lockdir+pid em var/lock.
             _x11_wd_pid=
+            if [ "${_x11_shared:-0}" != "1" ]; then
             _x11_wd_ver="3.9"
             # v3.16 — lockdir do watchdog saiu de $ROOTFS/var/lock: em imagem
             # nova (Debian/usrmerge) /var/lock e' SYMLINK para /run/lock — path
@@ -791,8 +814,10 @@ EOF
                 fi
             fi
             fi
+            fi
             # Diagnostico v3.9: estado real do listener compartilhado pos-waits
-            if ! { _x11_listen "$_SRV/xvfb.sock" || _x11_listen "$_SRV/.X11-unix/X0"; }; then
+            if [ "${_x11_shared:-0}" != "1" ] && \
+               ! { _x11_listen "$_SRV/xvfb.sock" || _x11_listen "$_SRV/.X11-unix/X0"; }; then
                 bootinfo "X11: DIAG: sem listener compartilhado pos-waits; -S X0=$([ -S "$_SRV/.X11-unix/X0" ] && echo 1 || echo 0) xvfb=$([ -S "$_SRV/xvfb.sock" ] && echo 1 || echo 0); proc=$(grep -c '.X11-unix' /proc/net/unix 2>/dev/null || echo 0) linha(s)"
             fi
             if [ "$_X11_LINK" = "1" ]; then
@@ -809,7 +834,9 @@ EOF
                 # (independente do shell da aba). Singleton por /proc: como o
                 # display :0 e compartilhado, dois WMs brigariam entre si.
                 _wm_cmd=""; _wm_bin=""
-                if [ -f "$ROOTFS/root/.wm" ]; then
+                if [ "${_x11_shared:-0}" = "1" ]; then
+                    :
+                elif [ -f "$ROOTFS/root/.wm" ]; then
                     _wm_cmd="$(sed -n 1p "$ROOTFS/root/.wm" 2>/dev/null | tr -d '\r')"
                     case "$_wm_cmd" in
                         ""|none|off) _wm_cmd="" ;;
