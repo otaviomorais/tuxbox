@@ -657,19 +657,14 @@ public class HomeFragment extends Fragment {
         String qRoot = shellQuote(rootfs);
         String qStage = shellQuote(stage);
         String qArchive = shellQuote(archive);
-        String pacmanCommand = "pacman -U --noconfirm --disable-sandbox /.tuxbox-mesa-stage/*.pkg.tar.xz";
+        String pacmanCommand = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; "
+                + "/usr/bin/pacman -U --noconfirm --disable-sandbox /.tuxbox-mesa-stage/*.pkg.tar.xz";
         String command = "D=" + qRoot + "; rm -rf " + qStage + "; mkdir -p " + qStage + ";"
                 + " tar -xf " + qArchive + " -C " + qStage + " 2>&1; outer_rc=$?;"
                 + " pkg_rc=$outer_rc;"
-                + " if [ \"$outer_rc\" = \"0\" ]; then"
+                + " if [ \"$outer_rc\" = \"0\" ] && [ -x \"$D/usr/bin/pacman\" ]; then"
                 + " chroot " + qRoot + " /bin/sh -c " + shellQuote(pacmanCommand) + " 2>&1; pkg_rc=$?;"
-                + " if [ \"$pkg_rc\" != \"0\" ]; then"
-                + " for p in " + qStage + "/*.pkg.tar.xz; do"
-                + " [ -f \"$p\" ] || continue; tar -xJf \"$p\" -C " + qRoot + " 2>&1 || pkg_rc=1;"
-                + " done;"
-                + " if [ -e \"$D/usr/lib/dri/kgsl_dri.so\" ] || [ -e \"$D/usr/lib/libvulkan_freedreno.so\" ]; then pkg_rc=0; fi;"
-                + " fi;"
-                + " fi;"
+                + " else pkg_rc=127; fi;"
                 + " if [ \"$pkg_rc\" = \"0\" ]; then chroot " + qRoot + " /sbin/ldconfig 2>/dev/null || chroot " + qRoot + " /usr/bin/ldconfig 2>/dev/null || true; fi;"
                 + " rm -rf " + qStage + "; rm -f " + qArchive + ";"
                 + " T=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo $(uname -m)-linux-gnu);"
