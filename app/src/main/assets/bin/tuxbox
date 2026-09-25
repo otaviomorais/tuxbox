@@ -475,6 +475,14 @@ if [ "${PHASE2:-}" = "1" ]; then
     # de xkbcomp no servidor.
     X11_ENV=""
     if [ "${GUI:-0}" = "1" ]; then
+        # v3.26 — xkb-data é requisito do termux-x11. O botão Instalar binários
+        # já o instala em todos os containers; esta segunda chamada cobre o
+        # caso de uma imagem nova/importada ser aberta diretamente com --gui.
+        _bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)"
+        if [ -n "$_bin_dir" ] && [ -x "$_bin_dir/ensure-xkb" ]; then
+            "$_bin_dir/ensure-xkb" "$ROOTFS" || \
+                warn "X11: nao foi possivel instalar xkb-data automaticamente (log: $ROOTFS/var/log/tuxbox-xkb.log)"
+        fi
         _tx11_ok=0
         _tx11_apk=$(/system/bin/pm path com.termux.x11 2>/dev/null | cut -d: -f2 | head -1 || true)
         if [ -n "$_tx11_apk" ]; then

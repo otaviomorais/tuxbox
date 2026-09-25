@@ -58,6 +58,7 @@ public final class AssetInstaller {
             installAtomically(ctx, "bin/tuxbox", new File(binDir, "tuxbox"));
             installAtomically(ctx, "bin/tuxbox-mini", new File(binDir, "tuxbox-mini"));
             installAtomically(ctx, "bin/getroot", new File(binDir, "getroot"));
+            installAtomically(ctx, "bin/ensure-xkb", new File(binDir, "ensure-xkb"));
             installAtomically(ctx, "ptyd/" + abi + "/ptyd", ptydPath(ctx));
         }
     }

@@ -1,0 +1,59 @@
+#!/system/bin/sh
+# Ensure a container has the XKB data required by termux-x11.
+# Usage: ensure-xkb <rootfs>
+# Runs on the Android host as root and installs the distro-specific package
+# only when /usr/share/X11/xkb/rules/evdev is missing.
+
+ROOTFS="${1:-}"
+[ -n "$ROOTFS" ] || exit 2
+[ -d "$ROOTFS" ] || exit 2
+
+XKB_DIR="$ROOTFS/usr/share/X11/xkb"
+[ -f "$XKB_DIR/rules/evdev" ] && exit 0
+
+mkdir -p "$ROOTFS/var/log" 2>/dev/null || true
+LOG="$ROOTFS/var/log/tuxbox-xkb.log"
+printf '[xkb] checking %s\n' "$ROOTFS" >> "$LOG" 2>/dev/null || true
+
+run_logged() {
+    "$@" >> "$LOG" 2>&1
+}
+
+installed=0
+if [ -x "$ROOTFS/usr/bin/apt-get" ]; then
+    if DEBIAN_FRONTEND=noninteractive run_logged chroot "$ROOTFS" \
+        /usr/bin/apt-get -o Acquire::Retries=1 update -qq &&
+       DEBIAN_FRONTEND=noninteractive run_logged chroot "$ROOTFS" \
+        /usr/bin/apt-get -y --no-install-recommends install xkb-data; then
+        installed=1
+    fi
+elif [ -x "$ROOTFS/sbin/apk" ]; then
+    if run_logged chroot "$ROOTFS" /sbin/apk add --no-cache xkb-data; then
+        installed=1
+    fi
+elif [ -x "$ROOTFS/usr/bin/dnf" ]; then
+    if run_logged chroot "$ROOTFS" /usr/bin/dnf -y install xkeyboard-config; then
+        installed=1
+    fi
+elif [ -x "$ROOTFS/usr/bin/yum" ]; then
+    if run_logged chroot "$ROOTFS" /usr/bin/yum -y install xkeyboard-config; then
+        installed=1
+    fi
+elif [ -x "$ROOTFS/usr/bin/pacman" ]; then
+    if run_logged chroot "$ROOTFS" /usr/bin/pacman -Sy --noconfirm xkeyboard-config; then
+        installed=1
+    fi
+elif [ -x "$ROOTFS/usr/bin/zypper" ]; then
+    if run_logged chroot "$ROOTFS" /usr/bin/zypper --non-interactive install xkeyboard-config; then
+        installed=1
+    fi
+fi
+
+if [ -f "$XKB_DIR/rules/evdev" ] || [ "$installed" = "1" ]; then
+    printf '[xkb] ready: %s\n' "$ROOTFS" >> "$LOG" 2>/dev/null || true
+    [ -f "$XKB_DIR/rules/evdev" ] && exit 0
+    exit 0
+fi
+
+printf '[xkb] unavailable package manager or install failed: %s\n' "$ROOTFS" >> "$LOG" 2>/dev/null || true
+exit 1

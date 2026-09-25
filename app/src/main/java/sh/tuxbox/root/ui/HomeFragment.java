@@ -690,7 +690,14 @@ public class HomeFragment extends Fragment {
             try {
                 AssetInstaller.install(appCtx);
                 String binDir = AssetInstaller.binDir(appCtx).getAbsolutePath();
-                RootShell.run("chmod 755 " + binDir + "/tuxbox " + binDir + "/tuxbox-mini " + binDir + "/getroot " + binDir + "/ptyd 2>&1; mkdir -p " + TuxPaths.ROOTFS_BASE);
+                String ensureXkb = binDir + "/ensure-xkb";
+                String installXkb = "for d in " + TuxPaths.ROOTFS_BASE + "/*; do "
+                        + "[ -d \"$d\" ] || continue; "
+                        + "\"" + ensureXkb + "\" \"$d\" || true; "
+                        + "done";
+                RootShell.run("chmod 755 " + binDir + "/tuxbox " + binDir + "/tuxbox-mini "
+                        + binDir + "/getroot " + binDir + "/ensure-xkb " + binDir + "/ptyd 2>&1; "
+                        + "mkdir -p " + TuxPaths.ROOTFS_BASE + "; " + installXkb);
                 log(getString(R.string.home_installed));
             } catch (Exception e) {
                 log("erro install: " + e);
